@@ -50,11 +50,20 @@ final class DeveloperServicesGatewayTests: XCTestCase {
         let requests = await transport.requests
         XCTAssertEqual(requests.last?.path, "/v1/certificates/explicit-cert")
         XCTAssertEqual(requests.last?.override, "DELETE")
-        let body = try XCTUnwrap(requests.first(where: { $0.path == "/v1/certificates" })?.body)
-        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any])
-        let attributes = try XCTUnwrap((root["data"] as? [String: Any])?["attributes"] as? [String: Any])
-        XCTAssertEqual(attributes["csrContent"] as? String, "synthetic-csr")
-        XCTAssertEqual(attributes["certificateType"] as? String, "DEVELOPMENT")
+        let body = try XCTUnwrap(requests.first(where: { $0.path.contains("ios/submitDevelopmentCSR.action") })?.body)
+        let root = try XCTUnwrap(PropertyListSerialization.propertyList(from: Data(body.utf8), format: nil) as? [String: Any])
+        XCTAssertEqual(root["csrContent"] as? String, "synthetic-csr")
+        XCTAssertEqual(root["teamId"] as? String, "TEAM12345")
+        XCTAssertNil(root["privateKey"])
+    }
+
+    func testGatewaySurfacesExplicitIssuanceQuotaWithoutDeletingAnything() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setLegacyResultCode(7460)
+        do { _ = try await gateway(transport).createDevelopmentCertificate(csr: "synthetic-csr"); XCTFail("Quota ignored") }
+        catch { XCTAssertEqual(error as? DeveloperServicesError, .certificateQuota) }
+        let requests = await transport.requests
+        XCTAssertFalse(requests.contains { $0.override == "DELETE" })
     }
 
     func testOrdinaryConflictDoesNotTriggerCertificateQuotaAndRawResponseIsNotExposed() async throws {
@@ -137,7 +146,7 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
     struct Request: Sendable { let host: String?; let path: String; let token: String?; let team: String?; let body: String?; let override: String? }
     var requests: [Request] = []
     private var conflict = false
-    private var legacyResultCode: Int?
+    private var legacyResultCode: Int? = 0
     func setConflict() { conflict = true }
     func setLegacyResultCode(_ code: Int) { legacyResultCode = code }
     nonisolated var asOpenAPITransport: any ClientTransport { self }
@@ -155,7 +164,7 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
         let method = request.headerFields[.init("X-HTTP-Method-Override")!] ?? request.method.rawValue
         let path = request.path ?? ""
         requests.append(.init(host: baseURL.host, path: path, token: request.headerFields[.init("X-Apple-GS-Token")!], team: team, body: String(data: bytes, encoding: .utf8), override: method))
-        if path.contains("ios/submitDevelopmentCSR.action"), let code = legacyResultCode {
+        if !conflict, path.contains("ios/submitDevelopmentCSR.action"), let code = legacyResultCode {
             let payload: [String: Any] = ["resultCode": code, "resultString": "synthetic-sensitive-response", "certRequest": ["certContent": Data([1])]]
             return (.init(status: .ok), HTTPBody(try PropertyListSerialization.data(fromPropertyList: payload, format: .xml, options: 0)))
         }

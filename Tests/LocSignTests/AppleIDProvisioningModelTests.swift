@@ -90,19 +90,34 @@ final class AppleIDProvisioningModelTests: XCTestCase {
         model.password = "synthetic-password"
         return model
     }
+
+    @MainActor
+    func testNoTeamCannotSignAndMultipleTeamsRequireSelection() async {
+        let empty = ready(AccountSheetEngineFixture(teams: []))
+        await empty.logIn()
+        XCTAssertNil(empty.account)
+        XCTAssertNotNil(empty.error)
+        let multiple = ready(AccountSheetEngineFixture(teams: [.init(id: "FIRST", name: "First"), .init(id: "SECOND", name: "Second")]))
+        await multiple.logIn()
+        XCTAssertEqual(multiple.account?.teams.count, 2)
+        XCTAssertTrue(multiple.teamID.isEmpty)
+    }
 }
 
 private actor AccountSheetEngineFixture: ProvisioningEngine {
     nonisolated let codeRequested = XCTestExpectation(description: "Code requested")
     private let twoFactor: Bool
+    private let teams: [ProvisioningTeam]
     private(set) var loginCount = 0
     private(set) var cancelCount = 0
     private(set) var suppliedCode: String?
-    init(twoFactor: Bool = false) { self.twoFactor = twoFactor }
+    init(twoFactor: Bool = false, teams: [ProvisioningTeam] = [.init(id: "TEAM12345", name: "Synthetic")]) {
+        self.twoFactor = twoFactor; self.teams = teams
+    }
     func logIn(appleID: String, password: String, twoFactorCode: @escaping TwoFactorCodeProvider) async throws -> ProvisioningAccount {
         loginCount += 1
         if twoFactor { codeRequested.fulfill(); suppliedCode = await twoFactorCode() }
-        return .init(id: UUID(), appleID: appleID, teams: [.init(id: "TEAM12345", name: "Synthetic")])
+        return .init(id: UUID(), appleID: appleID, teams: teams)
     }
     func restoreAccount() async throws -> ProvisioningAccount? { nil }
     func cancel() async { cancelCount += 1 }
