@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>ApplicationIdentifierPrefix</key>
+	<array>
+		<string>PREFIX1234</string>
+	</array>
+	<key>CreationDate</key>
+	<date>2020-01-01T00:00:00Z</date>
+	<key>DeveloperCertificates</key>
+	<array>
+		<data>
+		MIIDNDCCAhygAwIBAgIBaTANBgkqhkiG9w0BAQsFADAvMS0wKwYDVQQDDCRB
+		cHBsZSBpUGhvbmUgQ2VydGlmaWNhdGlvbiBBdXRob3JpdHkwIBcNMjAwMTAx
+		MDAwMDAwWhgPMjEwMDAxMDEwMDAwMDBaMCgxJjAkBgNVBAMMHUxvY1NpZ24g
+		U3ludGhldGljIERldmVsb3BtZW50MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A
+		MIIBCgKCAQEAlDlMKs4m/QV+bivLe6BYeu4MqLP8jfobzY3+klt/EI9V5UBJ
+		JebGGqN2gjrCmkKnbqATAGnAUwIZdE0EMJuoBKEXRt9qZPfFKHxvHA5q2bnC
+		mgdmPQN9ONlNVFj9vid3Ln/GIq9ERsQNQ3rTbfMLjYvGLnndA7kx6JZNGGfx
+		C99Z2i3ECNHuZ53gXvaD7363us7oSH8QWvN17b2r7b0ysZ2oXqSk/j7KA/ti
+		SX+NdOMO8Ey1Y6VocQINhuPpRnPeK97lih5JQjQMM9syD24QV+yEcaG5NGRA
+		A6zqo1SYiyWd947vbHRdGL3eLdzA+gRIxd3my6Pf/sVIBPYcZ0xS6QIDAQAB
+		o2AwXjAMBgNVHRMBAf8EAjAAMA4GA1UdDwEB/wQEAwIHgDAdBgNVHQ4EFgQU
+		B0QDQ73tc/1eOokAKCqYwPTuPRYwHwYDVR0jBBgwFoAUBE/uWoe21UEm3Oe7
+		1cY5hUu7t4QwDQYJKoZIhvcNAQELBQADggEBADSaOYCn9yMJy//TcDl5P0AB
+		ydlMhPaBp6Pr1UYc6pl5JF541uDNj5IcNgxnu6YSLPKNye5r6zDs4LQYMwJK
+		KqLnIeDT61CtXT1H2AwBuKr2Y+oT7EMWD1fEYFYlbdbjNQkJ0bXZkN6vF1E7
+		FLBNTtKCV1YOMo0QhM0vwD9oT80OSFlp2ZRqDjE+7cPgFLlK+e/AT1n92lUF
+		drVZUPg/BIwvxW0Lo6LwAxibmpaViTClN4fHGUZ7IIYsqD5qctuFnZQa8FkD
+		RYyE0W/VfOM3sVtulJktiBUIGnOAc6ChzcR/RsODWLpBy0GMnn0gVSQe58QI
+		+D6DhojF2UJQHU6IQCI=
+		</data>
+	</array>
+	<key>Entitlements</key>
+	<dict>
+		<key>application-identifier</key>
+		<string>PREFIX1234.com.test.app</string>
+		<key>com.apple.developer.team-identifier</key>
+		<string>TEAM12345</string>
+		<key>get-task-allow</key>
+		<true/>
+		<key>keychain-access-groups</key>
+		<array>
+			<string>PREFIX1234.com.test.app</string>
+		</array>
+	</dict>
+	<key>ExpirationDate</key>
+	<date>2099-01-01T00:00:00Z</date>
+	<key>Name</key>
+	<string>Synthetic profile</string>
+	<key>ProvisionedDevices</key>
+	<array>
+		<string>SYNTHETIC-UDID</string>
+	</array>
+	<key>TeamIdentifier</key>
+	<array>
+		<string>TEAM12345</string>
+	</array>
+	<key>UUID</key>
+	<string>00000000-1111-2222-3333-444444444444</string>
+</dict>
+</plist>

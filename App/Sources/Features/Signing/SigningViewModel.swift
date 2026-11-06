@@ -1,0 +1,148 @@
+import Foundation
+import Combine
+
+enum SigningInput: Equatable { case ipa, identity, profile, pairing }
+
+@MainActor
+final class SigningViewModel: ObservableObject {
+    @Published private(set) var ipaName = "未选择"
+    @Published private(set) var identityName = "未选择"
+    @Published private(set) var profile: ProvisioningProfileData?
+    @Published private(set) var needsPassword = false
+    @Published var password = ""
+    @Published private(set) var isSigning = false
+    @Published private(set) var isImporting = false
+    @Published private(set) var outputURL: URL?
+    @Published private(set) var pairingName = "未选择"
+    @Published private(set) var isInstalling = false
+    @Published private(set) var installProgress = 0.0
+    @Published private(set) var installSucceeded = false
+    @Published var deviceHost = "" {
+        didSet { if deviceHost != oldValue { installSucceeded = false } }
+    }
+    @Published var error: String?
+    private var ipaURL: URL?
+    private var identityData: Data?
+    private var isPEM = false
+    private var pairingData: Data?
+    private let installer: any IPAInstalling
+
+    init(installer: any IPAInstalling = InstallCoordinator()) { self.installer = installer }
+
+    var canSign: Bool {
+        ipaURL != nil && identityData != nil && profile != nil && !isSigning && !isImporting && !isInstalling
+    }
+
+    func importFile(_ url: URL, as input: SigningInput) async {
+        guard !isSigning, !isImporting, !isInstalling else { return }
+        isImporting = true
+        defer { isImporting = false }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            switch input {
+            case .ipa:
+                guard url.pathExtension.lowercased() == "ipa" else {
+                    throw LocSignError.signing("请选择 .ipa 文件")
+                }
+                let copy = FileManager.default.temporaryDirectory.appendingPathComponent("import-\(UUID().uuidString).ipa")
+                try await Task.detached(priority: .userInitiated) {
+                    do {
+                        try FileManager.default.copyItem(at: url, to: copy)
+                    } catch {
+                        try? FileManager.default.removeItem(at: copy)
+                        throw error
+                    }
+                }.value
+                if let previous = ipaURL { try? FileManager.default.removeItem(at: previous) }
+                ipaURL = copy
+                ipaName = url.lastPathComponent
+            case .identity:
+                let ext = url.pathExtension.lowercased()
+                guard ["p12", "pfx", "pem"].contains(ext) else {
+                    throw LocSignError.signing("请选择 P12 证书或 PEM 私钥")
+                }
+                let data = try readSmallFile(url)
+                if ext == "pem" {
+                    guard let key = String(data: data, encoding: .utf8), key.contains("PRIVATE KEY-----") else {
+                        throw LocSignError.signing("PEM 文件中未找到私钥")
+                    }
+                }
+                identityData = data
+                isPEM = ext == "pem"
+                needsPassword = !isPEM
+                identityName = url.lastPathComponent
+                password = ""
+            case .profile:
+                profile = try ProfileParser.parse(readSmallFile(url))
+            case .pairing:
+                guard url.pathExtension.lowercased() == "plist" else {
+                    throw LocSignError.install("请选择配对 plist 文件")
+                }
+                let data = try readSmallFile(url)
+                _ = try PairingRecord(data: data)
+                pairingData = data
+                pairingName = url.lastPathComponent
+                installSucceeded = false
+            }
+            if input != .pairing { discardOutput() }
+            error = nil
+        } catch { self.error = error.localizedDescription }
+    }
+
+    func installSignedIPA() async {
+        guard !isInstalling, !isSigning, !isImporting, let outputURL, let pairingData else { return }
+        let host = deviceHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !host.isEmpty else { error = "请输入手机上的本地 VPN 地址"; return }
+        isInstalling = true
+        installProgress = 0
+        installSucceeded = false
+        error = nil
+        defer { isInstalling = false }
+        do {
+            try await installer.install(ipaURL: outputURL, host: host,
+                                                    pairingData: pairingData) { [weak self] value in
+                await MainActor.run { self?.installProgress = value }
+            }
+            installSucceeded = true
+            installProgress = 1
+        } catch { self.error = error.localizedDescription }
+    }
+
+    func sign() async {
+        guard canSign, let ipaURL, let data = identityData, let profile else { return }
+        isSigning = true
+        error = nil
+        discardOutput()
+        defer { isSigning = false; password = "" }
+        let identity: SigningIdentity
+        if isPEM {
+            guard let pem = String(data: data, encoding: .utf8) else {
+                error = "私钥文件不是 UTF-8 文本"
+                return
+            }
+            identity = .pem(pem)
+        } else { identity = .pkcs12(data, password: password) }
+        do {
+            outputURL = try await SigningEngine.shared.sign(ipaURL: ipaURL, identity: identity, profile: profile)
+        } catch { self.error = error.localizedDescription }
+    }
+
+    private func readSmallFile(_ url: URL) throws -> Data {
+        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard size <= 10_485_760 else { throw LocSignError.signing("证书或描述文件超过 10 MB") }
+        return try Data(contentsOf: url)
+    }
+
+    func discardOutput() {
+        guard !isInstalling else { return }
+        if let outputURL { try? FileManager.default.removeItem(at: outputURL) }
+        outputURL = nil
+        installProgress = 0
+        installSucceeded = false
+    }
+
+    deinit {
+        if let ipaURL { try? FileManager.default.removeItem(at: ipaURL) }
+    }
+}

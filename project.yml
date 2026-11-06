@@ -1,0 +1,69 @@
+name: LocSign
+options:
+  bundleIdPrefix: com.locsign
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.4"
+    CURRENT_PROJECT_VERSION: "5"
+    GENERATE_INFOPLIST_FILE: NO
+packages:
+  OpenSSL:
+    url: https://github.com/krzyzanowskim/OpenSSL
+    exactVersion: 3.6.5000
+  Zsign:
+    url: https://github.com/khcrysalis/Zsign-Package
+    revision: c4ba9da4283031c07efa03bce42c4b8602d22e73
+  ZIPFoundation:
+    url: https://github.com/weichsel/ZIPFoundation
+    from: 0.9.19
+  XTool:
+    path: Vendor/xtool
+  xtool-core:
+    path: Vendor/xtool-core
+targets:
+  LocSign:
+    type: application
+    platform: iOS
+    settings:
+      base:
+        SWIFT_OBJC_BRIDGING_HEADER: App/Sources/LocSign-Bridging-Header.h
+    sources:
+      - path: App/Sources
+      - path: App/Resources
+        buildPhase: resources
+    dependencies:
+      - package: OpenSSL
+      - package: Zsign
+      - package: ZIPFoundation
+      - package: XTool
+        products:
+          - XKit
+          - DeveloperAPI
+      - package: xtool-core
+        product: Superutils
+    info:
+      path: App/Sources/Info.plist
+      properties:
+        CFBundleDisplayName: LocSign
+        CFBundleShortVersionString: "0.1.4"
+        CFBundleVersion: "5"
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        NSLocalNetworkUsageDescription: 检测本机设备服务连接，用于验证手机内签名安装和定位功能。
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+  LocSignTests:
+    type: bundle.unit-test
+    platform: iOS
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+    sources:
+      - path: Tests/LocSignTests
+    dependencies:
+      - target: LocSign
+      - package: ZIPFoundation
