@@ -46,6 +46,90 @@ struct DeveloperServicesProvisioner: Sendable {
 
     func provision(app: ProvisioningApp, deviceUDID: String, teamID: String,
                    confirmRevocation: @escaping @Sendable ([CertificateRevocation]) async -> Bool) async throws -> ProvisioningMaterial {
-        throw DeveloperServicesError.invalidResponse
+        try Task.checkCancellation()
+        guard !app.bundleID.isEmpty, !deviceUDID.isEmpty, !teamID.isEmpty else { throw DeveloperServicesError.invalidResponse }
+        // Read and reject incompatible existing App IDs before any remote mutation.
+        let existingBundle = try await gateway.findExactBundleID(app.bundleID)
+        if let existingBundle {
+            guard existingBundle.identifier == app.bundleID,
+                  Set(existingBundle.capabilities).isSubset(of: ["IN_APP_PURCHASE"]) else {
+                throw ProvisioningError.unsupportedIPA("现有 App ID 包含不支持的权限，未修改远端配置")
+            }
+        }
+        let devices = try await gateway.listDevices()
+        try Task.checkCancellation()
+        let device: DeveloperDevice
+        if let registered = devices.first(where: { $0.udid == deviceUDID }) {
+            guard registered.enabled else { throw ProvisioningError.remote("所选设备已被停用") }
+            device = registered
+        } else { device = try await gateway.registerDevice(udid: deviceUDID) }
+        guard device.enabled, device.udid == deviceUDID else { throw DeveloperServicesError.invalidResponse }
+        try Task.checkCancellation()
+        let bundle: DeveloperBundle
+        if let existingBundle { bundle = existingBundle }
+        else { bundle = try await gateway.createBundleID(app.bundleID, name: app.name) }
+        guard bundle.identifier == app.bundleID,
+              Set(bundle.capabilities).isSubset(of: ["IN_APP_PURCHASE"]) else { throw DeveloperServicesError.invalidResponse }
+
+        let certificates = try await gateway.listCertificates()
+        var pending = try await store.loadPending()
+        var reusable: DeveloperCertificate?
+        if let saved = pending, let local = saved.certificate,
+           let remote = certificates.first(where: { $0.id == local.id && $0.serial == local.serial }),
+           remote.expiry > now(), let der = remote.der ?? local.der,
+           LocSignVerifyProvisioningCertificate(der, saved.privateKeyPEM, now()) != nil {
+            reusable = DeveloperCertificate(id: remote.id, serial: remote.serial, name: remote.name, expiry: remote.expiry, der: der)
+        }
+        if reusable == nil {
+            // A key saved before a failed CSR request remains the only candidate
+            // for recovery; otherwise create a fresh, durable pending identity.
+            if pending == nil || pending?.certificate != nil { pending = try keys.generate() }
+            guard var identity = pending else { throw DeveloperServicesError.invalidResponse }
+            try Task.checkCancellation()
+            try await store.savePending(identity)
+            let issued: DeveloperCertificate
+            do { issued = try await gateway.createDevelopmentCertificate(csr: identity.csr) }
+            catch DeveloperServicesError.certificateQuota {
+                let candidates = try await gateway.listCertificates().sorted { $0.id < $1.id }
+                guard !candidates.isEmpty else { throw DeveloperServicesError.certificateQuota }
+                try Task.checkCancellation()
+                guard await confirmRevocation(candidates.map(\.revocation)) else { throw ProvisioningError.revocationDeclined }
+                try Task.checkCancellation()
+                let fresh = try await gateway.listCertificates().sorted { $0.id < $1.id }
+                guard fresh.map(\.revocation) == candidates.map(\.revocation) else { throw DeveloperServicesError.remoteChanged }
+                for certificate in candidates {
+                    try Task.checkCancellation()
+                    try await store.invalidateCertificate(id: certificate.id)
+                    try Task.checkCancellation()
+                    try await gateway.revokeCertificate(id: certificate.id)
+                }
+                try Task.checkCancellation()
+                issued = try await gateway.createDevelopmentCertificate(csr: identity.csr)
+            }
+            guard issued.expiry > now(), let der = issued.der,
+                  LocSignVerifyProvisioningCertificate(der, identity.privateKeyPEM, now()) != nil else { throw ProfileValidationError.certificate }
+            identity.certificate = issued
+            // Preserve an issued certificate/key even if the profile request fails.
+            try await store.savePending(identity)
+            pending = identity
+            reusable = issued
+        }
+        guard let identity = pending, let certificate = reusable, let der = certificate.der,
+              let pem = String(data: identity.privateKeyPEM, encoding: .utf8) else { throw DeveloperServicesError.invalidResponse }
+        let validator = ProvisioningProfileValidator(trustAnchors: anchors, now: now())
+        func validate(_ profile: DeveloperProfile) throws -> ProvisioningMaterial {
+            let validated = try validator.validate(data: profile.content, expectedBundleID: app.bundleID,
+                expectedTeamID: teamID, expectedUDID: deviceUDID, expectedCertificateDER: der, privateKeyPEM: identity.privateKeyPEM)
+            return ProvisioningMaterial(privateKeyPEM: pem, profileData: validated.raw,
+                certificateExpiry: min(certificate.expiry, validated.certificateExpiry), profileExpiry: validated.expiry)
+        }
+        for profile in try await gateway.listProfiles(bundleID: bundle.id) {
+            try Task.checkCancellation()
+            if let material = try? validate(profile) { return material }
+        }
+        try Task.checkCancellation()
+        let profile = try await gateway.createDevelopmentProfile(bundleID: bundle.id, certificateID: certificate.id, deviceID: device.id)
+        try Task.checkCancellation()
+        return try validate(profile)
     }
 }

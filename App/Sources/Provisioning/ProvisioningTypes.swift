@@ -1,11 +1,11 @@
 import Foundation
 
-struct ProvisioningTeam: Sendable, Equatable, Identifiable {
+struct ProvisioningTeam: Codable, Sendable, Equatable, Identifiable {
     let id: String
     let name: String
 }
 
-struct ProvisioningAccount: Sendable, Equatable {
+struct ProvisioningAccount: Codable, Sendable, Equatable {
     let id: UUID
     let appleID: String
     let teams: [ProvisioningTeam]
@@ -25,7 +25,7 @@ struct CertificateRevocation: Sendable, Equatable, Identifiable {
     let expiry: Date
 }
 
-struct ProvisioningMaterial: Sendable {
+struct ProvisioningMaterial: Codable, Sendable {
     let privateKeyPEM: String
     let profileData: Data
     let certificateExpiry: Date

@@ -67,6 +67,8 @@ final class DeveloperServicesGatewayTests: XCTestCase {
         XCTAssertEqual(certificates.first?.der, Data([1]))
         let profiles = try await gateway.listProfiles(bundleID: "bundle")
         XCTAssertEqual(profiles.first?.content, Data([2]))
+        let profileReads = await transport.requests
+        XCTAssertEqual(profileReads.last?.path, "/v1/bundleIds/bundle/profiles")
         _ = try await gateway.createDevelopmentProfile(bundleID: "bundle", certificateID: "cert", deviceID: "device")
         let requests = await transport.requests
         let body = try XCTUnwrap(requests.last?.body)
@@ -150,7 +152,7 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
         } else if path == "/v1/profiles", method == "POST" {
             payload = ["data": ["id": "profile", "type": "profiles", "attributes": ["profileContent": "Ag=="]]]
             status = .created
-        } else if path == "/v1/profiles" {
+        } else if path == "/v1/bundleIds/bundle/profiles" {
             payload = ["data": [["id": "profile", "type": "profiles", "attributes": ["profileContent": "Ag=="]]]]
             status = .ok
         } else { throw DeveloperServicesError.invalidResponse }

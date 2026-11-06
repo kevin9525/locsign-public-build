@@ -3,7 +3,7 @@ import XKit
 
 typealias TwoFactorCodeProvider = @Sendable () async -> String?
 
-struct AppleAccountSession: Sendable {
+struct AppleAccountSession: Codable, Sendable {
     let account: ProvisioningAccount
     let token: DeveloperServicesLoginToken
     let providerID: String
