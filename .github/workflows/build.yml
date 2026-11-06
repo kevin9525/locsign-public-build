@@ -44,7 +44,8 @@ jobs:
           mkdir -p LocSign.xcodeproj/project.xcworkspace/xcshareddata/swiftpm
           cp .ci/Package.resolved LocSign.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
       - name: Restore dependency build cache
-        uses: actions/cache@v4
+        id: dependencies
+        uses: actions/cache/restore@v4
         with:
           path: |
             build/SourcePackages
@@ -124,3 +125,12 @@ jobs:
             LocSign.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
           if-no-files-found: ignore
           retention-days: 7
+      - name: Save dependency build cache
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' && steps.dependencies.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            build/SourcePackages
+            build/Build
+            build/ModuleCache.noindex
+          key: ${{ steps.dependencies.outputs.cache-primary-key }}

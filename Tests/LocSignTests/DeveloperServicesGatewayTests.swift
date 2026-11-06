@@ -5,6 +5,37 @@ import OpenAPIRuntime
 @testable import LocSign
 
 final class DeveloperServicesGatewayTests: XCTestCase {
+    func testCreatesExactBundleAndCertificateAndRevokesOnlyExplicitCertificateID() async throws {
+        let transport = DeveloperAPIFixture()
+        let gateway = try gateway(transport)
+        let bundle = try await gateway.createBundleID("com.test.app", name: "Test")
+        XCTAssertEqual(bundle.identifier, "com.test.app")
+        let certificate = try await gateway.createDevelopmentCertificate(csr: "synthetic-csr")
+        XCTAssertEqual(certificate.id, "cert")
+        XCTAssertEqual(certificate.der, Data([1]))
+        try await gateway.revokeCertificate(id: "explicit-cert")
+        let requests = await transport.requests
+        XCTAssertEqual(requests.last?.path, "/v1/certificates/explicit-cert")
+        XCTAssertEqual(requests.last?.override, "DELETE")
+        let body = try XCTUnwrap(requests.first(where: { $0.path == "/v1/certificates" })?.body)
+        let root = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any])
+        let attributes = try XCTUnwrap((root["data"] as? [String: Any])?["attributes"] as? [String: Any])
+        XCTAssertEqual(attributes["csrContent"] as? String, "synthetic-csr")
+        XCTAssertEqual(attributes["certificateType"] as? String, "DEVELOPMENT")
+    }
+
+    func testOrdinaryConflictDoesNotTriggerCertificateQuotaAndRawResponseIsNotExposed() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setConflict()
+        do {
+            _ = try await gateway(transport).createDevelopmentCertificate(csr: "synthetic-csr")
+            XCTFail("Conflict accepted")
+        } catch {
+            XCTAssertEqual(error as? DeveloperServicesError, .rejected(409))
+            XCTAssertFalse(error.localizedDescription.contains("synthetic-sensitive-response"))
+        }
+    }
+
     func testDeviceLookupAndRegistrationUseAppleMiddlewareAndExactUDID() async throws {
         let transport = DeveloperAPIFixture()
         let gateway = try gateway(transport)
@@ -70,6 +101,8 @@ private struct DeveloperRawFixture: RawADIProvider {
 private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
     struct Request: Sendable { let host: String?; let path: String; let token: String?; let team: String?; let body: String?; let override: String? }
     var requests: [Request] = []
+    private var conflict = false
+    func setConflict() { conflict = true }
     nonisolated var asOpenAPITransport: any ClientTransport { self }
     func makeWebSocket(url: URL) async throws -> any WebSocketSession { throw DeveloperServicesError.invalidResponse }
     func withEphemeralClient<T>(perform: (any HTTPClientProtocol) async throws -> T) async throws -> T { try await perform(self) }
@@ -84,6 +117,13 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
         let method = request.headerFields[.init("X-HTTP-Method-Override")!] ?? request.method.rawValue
         let path = request.path ?? ""
         requests.append(.init(host: baseURL.host, path: path, token: request.headerFields[.init("X-Apple-GS-Token")!], team: team, body: String(data: bytes, encoding: .utf8), override: method))
+        if conflict {
+            let payload = ["errors": [["status": "409", "code": "ENTITY_ERROR", "title": "synthetic-sensitive-response", "detail": "synthetic-sensitive-response"]]]
+            return (.init(status: .conflict, headerFields: [.contentType: "application/json"]), HTTPBody(try JSONSerialization.data(withJSONObject: payload)))
+        }
+        if path == "/v1/certificates/explicit-cert", method == "DELETE" {
+            return (.init(status: .noContent), nil)
+        }
         let payload: [String: Any]
         let status: XKit.HTTPResponse.Status
         if path == "/v1/devices", method == "POST" {
@@ -92,12 +132,18 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
         } else if path == "/v1/devices" {
             payload = ["data": [["id": "device", "type": "devices", "attributes": ["udid": "SYNTHETIC-UDID", "status": "ENABLED", "platform": "IOS"]]]]
             status = .ok
+        } else if path == "/v1/bundleIds", method == "POST" {
+            payload = ["data": ["id": "bundle", "type": "bundleIds", "attributes": ["identifier": attributes?["identifier"] as? String ?? ""]]]
+            status = .created
         } else if path == "/v1/bundleIds" {
             payload = ["data": [["id": "prefix", "type": "bundleIds", "attributes": ["identifier": "com.test.app.extra"]], ["id": "bundle", "type": "bundleIds", "attributes": ["identifier": "com.test.app"]]]]
             status = .ok
         } else if path == "/v1/bundleIds/bundle/bundleIdCapabilities" {
             payload = ["data": [["id": "cap", "type": "bundleIdCapabilities", "attributes": ["capabilityType": "IN_APP_PURCHASE"]]]]
             status = .ok
+        } else if path == "/v1/certificates", method == "POST" {
+            payload = ["data": ["id": "cert", "type": "certificates", "attributes": ["serialNumber": "01", "name": "Synthetic", "expirationDate": "2035-01-01T00:00:00Z", "certificateContent": "AQ==", "certificateType": "DEVELOPMENT"]]]
+            status = .created
         } else if path == "/v1/certificates" {
             payload = ["data": [["id": "cert", "type": "certificates", "attributes": ["serialNumber": "01", "name": "Synthetic", "expirationDate": "2035-01-01T00:00:00Z", "certificateContent": "AQ==", "certificateType": "DEVELOPMENT"]]]]
             status = .ok
