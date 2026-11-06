@@ -17,10 +17,18 @@ final class SigningViewModel: ObservableObject {
     @Published private(set) var isInstalling = false
     @Published private(set) var isProvisioning = false
     @Published private(set) var verifiedDeviceUDID: String?
+    @Published private(set) var profileExpiry: Date?
+    @Published private(set) var certificateExpiry: Date?
     @Published private(set) var installProgress = 0.0
     @Published private(set) var installSucceeded = false
     @Published var deviceHost = "" {
-        didSet { if deviceHost != oldValue { installSucceeded = false } }
+        didSet {
+            if deviceHost != oldValue {
+                installSucceeded = false
+                verifiedDeviceUDID = nil
+                generation = UUID()
+            }
+        }
     }
     @Published var error: String?
     private var ipaURL: URL?
@@ -30,6 +38,8 @@ final class SigningViewModel: ObservableObject {
     private let installer: any IPAInstalling
     private let deviceProbe: any PairedDeviceProbing
     private let materialSigner: @MainActor (URL, ProvisioningMaterial) async throws -> URL
+    private var generation = UUID()
+    private var provisioningEngine: (any ProvisioningEngine)?
 
     init(installer: any IPAInstalling = InstallCoordinator(), deviceProbe: any PairedDeviceProbing = ProvisioningDeviceProbe(),
          materialSigner: (@MainActor (URL, ProvisioningMaterial) async throws -> URL)? = nil) {
@@ -39,24 +49,90 @@ final class SigningViewModel: ObservableObject {
     }
 
     static func signProvisionedMaterial(_ ipa: URL, _ material: ProvisioningMaterial) async throws -> URL {
-        throw ProvisioningError.materialInvalid("尚未接入签名")
+        let profile = try ProfileParser.parse(material.profileData)
+        return try await SigningEngine.shared.sign(ipaURL: ipa, identity: .pem(material.privateKeyPEM), profile: profile)
     }
     func verifyProvisioningDevice() async {
-        error = "设备尚未验证"
+        guard !isSigning, !isImporting, !isInstalling, !isProvisioning else { return }
+        guard let pairingData else { error = "请先导入这台手机的配对文件"; return }
+        let host = deviceHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !host.isEmpty else { error = "请输入手机本地 VPN 的设备地址"; return }
+        generation = UUID()
+        let operation = generation
+        isProvisioning = true
+        verifiedDeviceUDID = nil
+        error = nil
+        defer { isProvisioning = false }
+        do {
+            let udid = try await deviceProbe.deviceUDID(host: host, pairingData: pairingData)
+            try check(operation)
+            guard !udid.isEmpty else { throw ProvisioningError.materialInvalid("设备未返回标识") }
+            verifiedDeviceUDID = udid
+        } catch {
+            if generation == operation { self.error = safeMessage(error) }
+        }
     }
     func provisionAndSign(using engine: any ProvisioningEngine, account: ProvisioningAccount, teamID: String,
                           providerAccepted: Bool,
                           confirmRevocation: @escaping @Sendable ([CertificateRevocation]) async -> Bool = { _ in false }) async {
-        error = "自动签名尚未接入"
+        guard !isSigning, !isImporting, !isInstalling, !isProvisioning else { return }
+        guard providerAccepted else { error = "请先确认 Anisette 提供方及数据用途"; return }
+        guard !teamID.isEmpty, account.teams.contains(where: { $0.id == teamID }) else { error = "请选择可用的免费 iOS 团队"; return }
+        guard let ipaURL, let pairingData, let verifiedDeviceUDID else { error = "请导入 IPA、配对文件并检测已配对设备"; return }
+        let host = deviceHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        generation = UUID()
+        let operation = generation
+        isProvisioning = true
+        provisioningEngine = engine
+        error = nil
+        discardOutput()
+        defer {
+            isProvisioning = false
+            provisioningEngine = nil
+        }
+        do {
+            let currentDevice = try await deviceProbe.deviceUDID(host: host, pairingData: pairingData)
+            try check(operation)
+            guard currentDevice == verifiedDeviceUDID else {
+                self.verifiedDeviceUDID = nil
+                throw ProvisioningError.materialInvalid("配对设备已变化，请重新检测")
+            }
+            let material = try await engine.provision(request: .init(accountID: account.id, teamID: teamID, ipaURL: ipaURL,
+                deviceUDID: currentDevice), confirmRevocation: confirmRevocation)
+            try check(operation)
+            let output = try await materialSigner(ipaURL, material)
+            do { try check(operation) }
+            catch { try? FileManager.default.removeItem(at: output); throw error }
+            guard FileManager.default.fileExists(atPath: output.path) else { throw LocSignError.signing("签名未生成文件") }
+            outputURL = output
+            profileExpiry = material.profileExpiry
+            certificateExpiry = material.certificateExpiry
+        } catch {
+            if generation == operation { self.error = safeMessage(error) }
+        }
     }
-    func cancelProvisioning() async {}
+    func cancelProvisioning() async {
+        generation = UUID()
+        let engine = provisioningEngine
+        // Keep input locks until any in-flight signer has drained.
+        await engine?.cancel()
+    }
+
+    private func check(_ operation: UUID) throws {
+        try Task.checkCancellation()
+        guard generation == operation else { throw CancellationError() }
+    }
+    private func safeMessage(_ failure: Error) -> String {
+        if failure is CancellationError { return "操作已取消" }
+        return ProvisioningRedaction.redact(failure.localizedDescription)
+    }
 
     var canSign: Bool {
-        ipaURL != nil && identityData != nil && profile != nil && !isSigning && !isImporting && !isInstalling
+        ipaURL != nil && identityData != nil && profile != nil && !isSigning && !isImporting && !isInstalling && !isProvisioning
     }
 
     func importFile(_ url: URL, as input: SigningInput) async {
-        guard !isSigning, !isImporting, !isInstalling else { return }
+        guard !isSigning, !isImporting, !isInstalling, !isProvisioning else { return }
         isImporting = true
         defer { isImporting = false }
         let scoped = url.startAccessingSecurityScopedResource()
@@ -104,6 +180,8 @@ final class SigningViewModel: ObservableObject {
                 let data = try readSmallFile(url)
                 _ = try PairingRecord(data: data)
                 pairingData = data
+                verifiedDeviceUDID = nil
+                generation = UUID()
                 pairingName = url.lastPathComponent
                 installSucceeded = false
             }
@@ -113,7 +191,7 @@ final class SigningViewModel: ObservableObject {
     }
 
     func installSignedIPA() async {
-        guard !isInstalling, !isSigning, !isImporting, let outputURL, let pairingData else { return }
+        guard !isInstalling, !isSigning, !isImporting, !isProvisioning, let outputURL, let pairingData else { return }
         let host = deviceHost.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty else { error = "请输入手机上的本地 VPN 地址"; return }
         isInstalling = true
@@ -160,6 +238,8 @@ final class SigningViewModel: ObservableObject {
         guard !isInstalling else { return }
         if let outputURL { try? FileManager.default.removeItem(at: outputURL) }
         outputURL = nil
+        profileExpiry = nil
+        certificateExpiry = nil
         installProgress = 0
         installSucceeded = false
     }

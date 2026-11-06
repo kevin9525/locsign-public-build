@@ -3,6 +3,8 @@ import UniformTypeIdentifiers
 
 struct SigningView: View {
     @StateObject private var model = SigningViewModel()
+    @StateObject private var account = AppleIDProvisioningModel()
+    @State private var showingAppleID = false
     @State private var importing = false
     @State private var input: SigningInput = .ipa
 
@@ -12,7 +14,7 @@ struct SigningView: View {
                 Section {
                     Label("导入、签名、导出", systemImage: "signature")
                         .font(.headline)
-                    Text("使用已有证书为 IPA 签名，签名完成后保存或分享文件。")
+                    Text("使用 Apple ID 获取签名材料，或导入已有证书。签名完成后可导出或安装。")
                         .foregroundStyle(.secondary)
                 }
                 Section("应用与签名材料") {
@@ -25,7 +27,13 @@ struct SigningView: View {
                             .textInputAutocapitalization(.never)
                     }
                 }
-                .disabled(model.isSigning || model.isImporting || model.isInstalling)
+                .disabled(model.isSigning || model.isImporting || model.isInstalling || model.isProvisioning)
+                Section {
+                    Button("使用 Apple ID 获取材料并签名") { showingAppleID = true }
+                        .disabled(model.isSigning || model.isImporting || model.isInstalling || model.isProvisioning)
+                } footer: {
+                    Text("先导入 IPA 和这台手机的配对文件；进入账号页后填写本地 VPN 地址并验证设备。")
+                }
                 if model.isImporting {
                     Section { HStack { ProgressView(); Text("正在导入文件…") } }
                 }
@@ -51,6 +59,12 @@ struct SigningView: View {
                     .disabled(!model.canSign)
                     if let output = model.outputURL {
                         Label("已生成签名文件", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                        if let expiry = model.profileExpiry {
+                            LabeledContent("描述文件到期") { Text(expiry, format: .dateTime.year().month().day().hour().minute()) }
+                        }
+                        if let expiry = model.certificateExpiry {
+                            LabeledContent("开发证书到期") { Text(expiry, format: .dateTime.year().month().day()) }
+                        }
                         ShareLink(item: output) { Label("保存或分享 IPA", systemImage: "square.and.arrow.up") }
                         Button("清除本次产物", role: .destructive) { model.discardOutput() }
                             .disabled(model.isInstalling)
@@ -74,13 +88,14 @@ struct SigningView: View {
                         }
                     }
                 } footer: {
-                    Text("导入电脑生成的配对 plist，配置手机本地 VPN 地址后可尝试自安装。首次配对仍需电脑；免费 Apple ID 签名流程尚未接入。")
+                    Text("导入电脑生成的配对 plist，配置手机本地 VPN 地址后可尝试自安装。首次配对仍需电脑。生成签名文件与设备安装成功分别验证。")
                 }
                 if let error = model.error {
                     Section { Text(error).foregroundStyle(.red).textSelection(.enabled) }
                 }
             }
             .navigationTitle("签名")
+            .sheet(isPresented: $showingAppleID) { AppleIDProvisioningSheet(account: account, signing: model) }
             .fileImporter(isPresented: $importing, allowedContentTypes: [.item]) { result in
                 switch result {
                 case .success(let url):

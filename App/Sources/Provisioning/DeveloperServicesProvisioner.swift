@@ -80,6 +80,16 @@ struct DeveloperServicesProvisioner: Sendable {
            LocSignVerifyProvisioningCertificate(der, saved.privateKeyPEM, now()) != nil {
             reusable = DeveloperCertificate(id: remote.id, serial: remote.serial, name: remote.name, expiry: remote.expiry, der: der)
         }
+        if var saved = pending, saved.certificate == nil,
+           let recovered = certificates.first(where: { certificate in
+               guard certificate.expiry > now(), let der = certificate.der else { return false }
+               return LocSignVerifyProvisioningCertificate(der, saved.privateKeyPEM, now()) != nil
+           }) {
+            saved.certificate = recovered
+            try await store.savePending(saved)
+            pending = saved
+            reusable = recovered
+        }
         if reusable == nil {
             // A key saved before a failed CSR request remains the only candidate
             // for recovery; otherwise create a fresh, durable pending identity.

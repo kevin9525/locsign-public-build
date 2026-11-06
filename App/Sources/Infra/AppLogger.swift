@@ -9,7 +9,7 @@ enum AppLogger {
         return doc.appendingPathComponent("logs/app.log")
     }
     static func log(_ level: Level, _ tag: String, _ message: String) {
-        let line = "\(Date()) [\(level.rawValue.uppercased())] \(tag): \(message)"
+        let line = "\(Date()) [\(level.rawValue.uppercased())] \(ProvisioningRedaction.redact(tag + ": " + message))"
         queue.async {
             buffer.append(line)
             if buffer.count > 2000 { buffer.removeFirst(buffer.count - 2000) }
