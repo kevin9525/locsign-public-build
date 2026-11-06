@@ -15,6 +15,8 @@ final class SigningViewModel: ObservableObject {
     @Published private(set) var outputURL: URL?
     @Published private(set) var pairingName = "未选择"
     @Published private(set) var isInstalling = false
+    @Published private(set) var isProvisioning = false
+    @Published private(set) var verifiedDeviceUDID: String?
     @Published private(set) var installProgress = 0.0
     @Published private(set) var installSucceeded = false
     @Published var deviceHost = "" {
@@ -26,8 +28,28 @@ final class SigningViewModel: ObservableObject {
     private var isPEM = false
     private var pairingData: Data?
     private let installer: any IPAInstalling
+    private let deviceProbe: any PairedDeviceProbing
+    private let materialSigner: @MainActor (URL, ProvisioningMaterial) async throws -> URL
 
-    init(installer: any IPAInstalling = InstallCoordinator()) { self.installer = installer }
+    init(installer: any IPAInstalling = InstallCoordinator(), deviceProbe: any PairedDeviceProbing = PairedDeviceProbe(),
+         materialSigner: (@MainActor (URL, ProvisioningMaterial) async throws -> URL)? = nil) {
+        self.installer = installer
+        self.deviceProbe = deviceProbe
+        self.materialSigner = materialSigner ?? Self.signProvisionedMaterial
+    }
+
+    static func signProvisionedMaterial(_ ipa: URL, _ material: ProvisioningMaterial) async throws -> URL {
+        throw ProvisioningError.materialInvalid("尚未接入签名")
+    }
+    func verifyProvisioningDevice() async {
+        error = "设备尚未验证"
+    }
+    func provisionAndSign(using engine: any ProvisioningEngine, account: ProvisioningAccount, teamID: String,
+                          providerAccepted: Bool,
+                          confirmRevocation: @escaping @Sendable ([CertificateRevocation]) async -> Bool = { _ in false }) async {
+        error = "自动签名尚未接入"
+    }
+    func cancelProvisioning() async {}
 
     var canSign: Bool {
         ipaURL != nil && identityData != nil && profile != nil && !isSigning && !isImporting && !isInstalling

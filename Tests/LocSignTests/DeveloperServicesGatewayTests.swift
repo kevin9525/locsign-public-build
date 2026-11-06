@@ -5,6 +5,39 @@ import OpenAPIRuntime
 @testable import LocSign
 
 final class DeveloperServicesGatewayTests: XCTestCase {
+    func testLegacyIssuerRecognizesOnlyExplicitQuotaCodeAndDoesNotExposeReason() async throws {
+        for code in [7460, 3250] {
+            let transport = DeveloperAPIFixture()
+            await transport.setLegacyResultCode(code)
+            let gateway = try gateway(transport)
+            let issuer = LegacyDevelopmentCertificateIssuer(auth: gateway.auth, provider: gateway.provider, client: gateway.client)
+            do { _ = try await issuer.issue(csr: "synthetic-csr"); XCTFail("Rejected issuance accepted") }
+            catch {
+                XCTAssertEqual(error as? DeveloperServicesError, code == 7460 ? .certificateQuota : .rejected(code))
+                XCTAssertFalse(error.localizedDescription.contains("synthetic-sensitive-response"))
+            }
+        }
+    }
+
+    func testLegacyIssuerSendsOnlyCSRAndSelectedTeamAndReturnsCertificateBytes() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setLegacyResultCode(0)
+        let gateway = try gateway(transport)
+        let issuer = LegacyDevelopmentCertificateIssuer(auth: gateway.auth, provider: gateway.provider, client: gateway.client)
+        let certificate = try await issuer.issue(csr: "synthetic-csr")
+        XCTAssertEqual(certificate, Data([1]))
+        let requests = await transport.requests
+        let request = try XCTUnwrap(requests.last)
+        XCTAssertTrue(request.path.contains("ios/submitDevelopmentCSR.action"))
+        XCTAssertEqual(request.host, "developerservices2.apple.com")
+        XCTAssertEqual(request.team, "TEAM12345")
+        XCTAssertEqual(request.token, "synthetic-token")
+        let body = try XCTUnwrap(request.body).data(using: .utf8)!
+        let plist = try XCTUnwrap(PropertyListSerialization.propertyList(from: body, format: nil) as? [String: Any])
+        XCTAssertEqual(plist["csrContent"] as? String, "synthetic-csr")
+        XCTAssertNil(plist["privateKey"])
+    }
+
     func testCreatesExactBundleAndCertificateAndRevokesOnlyExplicitCertificateID() async throws {
         let transport = DeveloperAPIFixture()
         let gateway = try gateway(transport)
@@ -104,21 +137,28 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
     struct Request: Sendable { let host: String?; let path: String; let token: String?; let team: String?; let body: String?; let override: String? }
     var requests: [Request] = []
     private var conflict = false
+    private var legacyResultCode: Int?
     func setConflict() { conflict = true }
+    func setLegacyResultCode(_ code: Int) { legacyResultCode = code }
     nonisolated var asOpenAPITransport: any ClientTransport { self }
     func makeWebSocket(url: URL) async throws -> any WebSocketSession { throw DeveloperServicesError.invalidResponse }
     func withEphemeralClient<T>(perform: (any HTTPClientProtocol) async throws -> T) async throws -> T { try await perform(self) }
     func send(_ request: XKit.HTTPRequest, body: HTTPBody?, baseURL: URL, operationID: String) async throws -> (XKit.HTTPResponse, HTTPBody?) {
         let bytes: Data
         if let body { bytes = try await body.reduce(into: Data()) { $0.append(contentsOf: $1) } } else { bytes = Data() }
-        let json = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any]
+        let json = ((try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any]) ??
+                   ((try? PropertyListSerialization.propertyList(from: bytes, format: nil)) as? [String: Any])
         let data = json?["data"] as? [String: Any]
         let attributes = data?["attributes"] as? [String: Any]
         let query = json?["urlEncodedQueryParams"] as? String
-        let team = attributes?["teamId"] as? String ?? URLComponents(string: "https://fixture.invalid/?" + (query ?? ""))?.queryItems?.first(where: { $0.name == "teamId" })?.value
+        let team = attributes?["teamId"] as? String ?? json?["teamId"] as? String ?? URLComponents(string: "https://fixture.invalid/?" + (query ?? ""))?.queryItems?.first(where: { $0.name == "teamId" })?.value
         let method = request.headerFields[.init("X-HTTP-Method-Override")!] ?? request.method.rawValue
         let path = request.path ?? ""
         requests.append(.init(host: baseURL.host, path: path, token: request.headerFields[.init("X-Apple-GS-Token")!], team: team, body: String(data: bytes, encoding: .utf8), override: method))
+        if path.contains("ios/submitDevelopmentCSR.action"), let code = legacyResultCode {
+            let payload: [String: Any] = ["resultCode": code, "resultString": "synthetic-sensitive-response", "certRequest": ["certContent": Data([1])]]
+            return (.init(status: .ok), HTTPBody(try PropertyListSerialization.data(fromPropertyList: payload, format: .xml, options: 0)))
+        }
         if conflict {
             let payload = ["errors": [["status": "409", "code": "ENTITY_ERROR", "title": "synthetic-sensitive-response", "detail": "synthetic-sensitive-response"]]]
             return (.init(status: .conflict, headerFields: [.contentType: "application/json"]), HTTPBody(try JSONSerialization.data(withJSONObject: payload)))

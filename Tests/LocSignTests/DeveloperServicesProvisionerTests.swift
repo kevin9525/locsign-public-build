@@ -4,6 +4,19 @@ import XCTest
 final class DeveloperServicesProvisionerTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
 
+    func testRecoversIssuedCertificateAfterLostResponseUsingDurablePendingKey() async throws {
+        let fixture = try setup(cached: true)
+        let loaded = try await fixture.store.loadPending()
+        var pending = try XCTUnwrap(loaded)
+        pending.certificate = nil
+        try await fixture.store.savePending(pending)
+        _ = try await run(fixture)
+        let mutations = await fixture.gateway.mutations
+        XCTAssertEqual(mutations, [])
+        let recovered = try await fixture.store.loadPending()
+        XCTAssertEqual(recovered?.certificate?.id, "cert")
+    }
+
     func testReusesDeviceExactBundleCertificateAndAuthenticatedProfileWithoutMutation() async throws {
         let fixture = try setup(cached: true)
         let result = try await run(fixture)
