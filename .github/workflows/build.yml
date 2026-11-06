@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -51,9 +51,9 @@ jobs:
             build/SourcePackages
             build/Build
             build/ModuleCache.noindex
-          key: locsign-xcode26-${{ hashFiles('.ci/Package.resolved', 'Vendor/**/Package.swift', 'build/toolchain.log') }}-${{ github.sha }}
+          key: locsign-xcode26-${{ runner.arch }}-${{ hashFiles('.ci/Package.resolved', 'Vendor/**/Package.swift', 'build/toolchain.log') }}-${{ github.sha }}
           restore-keys: |
-            locsign-xcode26-${{ hashFiles('.ci/Package.resolved', 'Vendor/**/Package.swift', 'build/toolchain.log') }}-
+            locsign-xcode26-${{ runner.arch }}-${{ hashFiles('.ci/Package.resolved', 'Vendor/**/Package.swift', 'build/toolchain.log') }}-
       - name: Resolve package dependencies
         run: |
           set -o pipefail
