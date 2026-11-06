@@ -31,7 +31,7 @@ final class SigningViewModel: ObservableObject {
     private let deviceProbe: any PairedDeviceProbing
     private let materialSigner: @MainActor (URL, ProvisioningMaterial) async throws -> URL
 
-    init(installer: any IPAInstalling = InstallCoordinator(), deviceProbe: any PairedDeviceProbing = PairedDeviceProbe(),
+    init(installer: any IPAInstalling = InstallCoordinator(), deviceProbe: any PairedDeviceProbing = ProvisioningDeviceProbe(),
          materialSigner: (@MainActor (URL, ProvisioningMaterial) async throws -> URL)? = nil) {
         self.installer = installer
         self.deviceProbe = deviceProbe

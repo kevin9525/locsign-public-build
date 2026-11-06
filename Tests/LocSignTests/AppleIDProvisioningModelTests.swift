@@ -1,0 +1,111 @@
+import XCTest
+@testable import LocSign
+
+final class AppleIDProvisioningModelTests: XCTestCase {
+    @MainActor
+    func testProviderConsentAndEnablementGateLogin() async {
+        let engine = AccountSheetEngineFixture()
+        let model = AppleIDProvisioningModel { _ in engine }
+        model.appleID = "user@example.com"; model.password = "synthetic-password"
+        await model.logIn()
+        XCTAssertNotNil(model.error)
+        var calls = await engine.loginCount
+        XCTAssertEqual(calls, 0)
+        model.providerAccepted = true; model.providerEnabled = false
+        model.password = "synthetic-password"
+        await model.logIn()
+        calls = await engine.loginCount
+        XCTAssertEqual(calls, 0)
+    }
+
+    @MainActor
+    func testLoginSelectsOnlyAvailableTeamAndClearsPassword() async {
+        let engine = AccountSheetEngineFixture()
+        let model = ready(engine)
+        await model.logIn()
+        XCTAssertEqual(model.account?.appleID, "user@example.com")
+        XCTAssertEqual(model.teamID, "TEAM12345")
+        XCTAssertTrue(model.password.isEmpty)
+        XCTAssertFalse(model.isBusy)
+        XCTAssertNil(model.error)
+    }
+
+    @MainActor
+    func testCancelledTwoFactorResumesOnceAndLateLoginCannotRestoreAccount() async {
+        let engine = AccountSheetEngineFixture(twoFactor: true)
+        let model = ready(engine)
+        let task = Task { await model.logIn() }
+        await fulfillment(of: [engine.codeRequested], timeout: 2)
+        // Yield to the MainActor callback, bounded by the expectation above.
+        for _ in 0..<20 where !model.awaitingCode { await Task.yield() }
+        XCTAssertTrue(model.awaitingCode)
+        XCTAssertTrue(model.password.isEmpty)
+        await model.cancel()
+        model.submitCode()
+        await task.value
+        XCTAssertNil(model.account)
+        XCTAssertFalse(model.awaitingCode)
+        XCTAssertTrue(model.code.isEmpty)
+        let supplied = await engine.suppliedCode
+        XCTAssertNil(supplied)
+    }
+
+    @MainActor
+    func testRevocationDefaultsToRejectOnCancelAndCanConfirmExactList() async {
+        let model = ready(AccountSheetEngineFixture())
+        let list = [CertificateRevocation(id: "cert", serialNumber: "123", name: "Synthetic", expiry: .distantFuture)]
+        let denied = Task { await model.confirmRevocation(list) }
+        for _ in 0..<20 where model.revocations.isEmpty { await Task.yield() }
+        XCTAssertEqual(model.revocations, list)
+        await model.cancel()
+        let first = await denied.value
+        XCTAssertFalse(first)
+        let accepted = Task { await model.confirmRevocation(list) }
+        for _ in 0..<20 where model.revocations.isEmpty { await Task.yield() }
+        model.resolveRevocation(true)
+        let second = await accepted.value
+        XCTAssertTrue(second)
+        XCTAssertTrue(model.revocations.isEmpty)
+    }
+
+    @MainActor
+    func testProviderChangeClearsAccountConsentAndCancelsPreviousEngine() async {
+        let engine = AccountSheetEngineFixture()
+        let model = ready(engine)
+        await model.logIn()
+        model.endpoint = "https://replacement.example.com"
+        await model.changeProvider()
+        XCTAssertNil(model.account)
+        XCTAssertFalse(model.providerAccepted)
+        XCTAssertEqual(model.teamID, "")
+        let cancelled = await engine.cancelCount
+        XCTAssertGreaterThan(cancelled, 0)
+    }
+
+    @MainActor
+    private func ready(_ engine: AccountSheetEngineFixture) -> AppleIDProvisioningModel {
+        let model = AppleIDProvisioningModel { _ in engine }
+        model.providerAccepted = true
+        model.appleID = "user@example.com"
+        model.password = "synthetic-password"
+        return model
+    }
+}
+
+private actor AccountSheetEngineFixture: ProvisioningEngine {
+    nonisolated let codeRequested = XCTestExpectation(description: "Code requested")
+    private let twoFactor: Bool
+    private(set) var loginCount = 0
+    private(set) var cancelCount = 0
+    private(set) var suppliedCode: String?
+    init(twoFactor: Bool = false) { self.twoFactor = twoFactor }
+    func logIn(appleID: String, password: String, twoFactorCode: @escaping TwoFactorCodeProvider) async throws -> ProvisioningAccount {
+        loginCount += 1
+        if twoFactor { codeRequested.fulfill(); suppliedCode = await twoFactorCode() }
+        return .init(id: UUID(), appleID: appleID, teams: [.init(id: "TEAM12345", name: "Synthetic")])
+    }
+    func restoreAccount() async throws -> ProvisioningAccount? { nil }
+    func cancel() async { cancelCount += 1 }
+    func logout(account: String) async throws {}
+    func provision(request: ProvisioningRequest, confirmRevocation: @escaping @Sendable ([CertificateRevocation]) async -> Bool) async throws -> ProvisioningMaterial { throw ProvisioningError.cancelled }
+}

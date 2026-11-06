@@ -52,6 +52,45 @@ final class SigningProvisioningViewModelTests: XCTestCase {
     }
 
     private let account = ProvisioningAccount(id: UUID(), appleID: "user@example.com", teams: [.init(id: "TEAM12345", name: "Synthetic")])
+    @MainActor
+    func testRepeatedSubmissionAndImportsAreBlockedWhileProvisioning() async throws {
+        let fixture = try await setup(delayed: true)
+        await fixture.model.verifyProvisioningDevice()
+        let task = Task { await fixture.model.provisionAndSign(using: fixture.engine, account: account, teamID: "TEAM12345", providerAccepted: true) }
+        await fulfillment(of: [fixture.engine.started], timeout: 2)
+        XCTAssertTrue(fixture.model.isProvisioning)
+        XCTAssertFalse(fixture.model.canSign)
+        let name = fixture.model.ipaName
+        await fixture.model.importFile(fixture.signedIPA, as: .ipa)
+        XCTAssertEqual(fixture.model.ipaName, name)
+        await fixture.model.provisionAndSign(using: fixture.engine, account: account, teamID: "TEAM12345", providerAccepted: true)
+        let requests = await fixture.engine.requests
+        XCTAssertEqual(requests.count, 1)
+        await fixture.model.cancelProvisioning()
+        await fixture.engine.release()
+        await task.value
+    }
+
+    @MainActor
+    func testChangingHostInvalidatesVerifiedDevice() async throws {
+        let fixture = try await setup()
+        await fixture.model.verifyProvisioningDevice()
+        fixture.model.deviceHost = "127.0.0.2"
+        XCTAssertNil(fixture.model.verifiedDeviceUDID)
+        await fixture.model.provisionAndSign(using: fixture.engine, account: account, teamID: "TEAM12345", providerAccepted: true)
+        let requests = await fixture.engine.requests
+        XCTAssertTrue(requests.isEmpty)
+    }
+
+    @MainActor
+    func testSignerFailureDoesNotPublishOutput() async throws {
+        let fixture = try await setup(signerFails: true)
+        await fixture.model.verifyProvisioningDevice()
+        await fixture.model.provisionAndSign(using: fixture.engine, account: account, teamID: "TEAM12345", providerAccepted: true)
+        XCTAssertNil(fixture.model.outputURL)
+        XCTAssertNotNil(fixture.model.error)
+        XCTAssertFalse(fixture.model.installSucceeded)
+    }
     private struct Fixture {
         let model: SigningViewModel
         let probe: SigningDeviceProbeFixture
@@ -59,7 +98,7 @@ final class SigningProvisioningViewModelTests: XCTestCase {
         let signedIPA: URL
     }
     @MainActor
-    private func setup(delayed: Bool = false) async throws -> Fixture {
+    private func setup(delayed: Bool = false, signerFails: Bool = false) async throws -> Fixture {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
@@ -71,6 +110,7 @@ final class SigningProvisioningViewModelTests: XCTestCase {
         let engine = SigningProvisioningEngineFixture(delayed: delayed)
         let model = SigningViewModel(deviceProbe: probe, materialSigner: { _, material in
             XCTAssertEqual(material.privateKeyPEM, "synthetic-private-key")
+            if signerFails { throw LocSignError.signing("synthetic signing failure") }
             return signed
         })
         model.deviceHost = "127.0.0.1"
