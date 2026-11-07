@@ -53,3 +53,7 @@
 0.2.2 交付验证：[CI](https://github.com/kevin9525/locsign-public-build/actions/runs/42352560129) 的 185 项 XCTest、4 项打包测试、模拟器/设备构建和打包步骤均通过。已下载最终未签名 IPA 并核验 0.2.2 / build 8、资源和 CRC。此版本确认修复的是错误信息展示；实际 Apple 拒绝原因和完整签名安装结果仍待真机反馈。
 
 0.2.2 后续真机截图明确显示“注册应用标识失败（HTTP 409）”，USB 已确认安装版本为 0.2.2 / build 8，且未进入证书申请。用户确认允许增加独立签名标识。0.2.3 / build 9 的 202 项 XCTest、4 项打包测试、模拟器/设备构建和打包通过[CI](https://github.com/kevin9525/locsign-public-build/actions/runs/42364714322)，最终 IPA 已核验。新个人标识流程仍待真机重试；409 本身不能证明标识占用，注册额度限制也不能靠更换标识解除。详细证据与步骤见 [个人签名标识](spike/2026-11-07-personal-signing-identifier.md)。
+
+后续真机截图已确认安装 0.2.3（9），个人标识已生成且配对通过；流程已进入“申请开发证书”，返回“Apple Developer Services 返回的数据无效”。旧错误同时覆盖证书签发响应解析与 REST 证书记录匹配，不能据此断言 Apple 未签发证书。代码检查发现匹配逻辑依赖可选的 `certificateContent`，不兼容只返回序列号等信息的证书列表。修复与验证记录见 [证书响应兼容](spike/2026-11-07-certificate-resolution.md)。具体真机响应尚未捕获。
+
+0.2.4 / build 10 交付验证：208 项 XCTest、4 项打包测试、模拟器/设备构建及 IPA 打包全部通过[CI](https://github.com/kevin9525/locsign-public-build/actions/runs/42371240623)，最终 IPA 的版本、应用标识、资源及 CRC 已核验。更新后保留相同个人签名标识，点击“获取材料并签名”复测。若失败，请记录完整新错误和是否出现证书撤销确认；旧版已签发但未保存的证书不保证可恢复，完整真机签名/安装结果仍待确认。
