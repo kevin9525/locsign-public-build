@@ -3,9 +3,16 @@ import Foundation
 protocol ProvisioningEngine: Sendable {
     func logIn(appleID: String, password: String, twoFactorCode: @escaping TwoFactorCodeProvider) async throws -> ProvisioningAccount
     func restoreAccount() async throws -> ProvisioningAccount?
+    func restoreSigningAccount() async throws -> ProvisioningAccount?
+    func cachedMaterial(request: ProvisioningRequest) async throws -> ProvisioningMaterial?
     func provision(request: ProvisioningRequest, confirmRevocation: @escaping @Sendable ([CertificateRevocation]) async -> Bool) async throws -> ProvisioningMaterial
     func cancel() async
     func logout(account: String) async throws
+}
+
+extension ProvisioningEngine {
+    func restoreSigningAccount() async throws -> ProvisioningAccount? { nil }
+    func cachedMaterial(request: ProvisioningRequest) async throws -> ProvisioningMaterial? { nil }
 }
 
 protocol ProvisioningBackend: Sendable {

@@ -4,6 +4,47 @@ import ZIPFoundation
 @testable import LocSign
 
 final class ProvisioningEngineMaterialTests: XCTestCase {
+    func testCachedMaterialsRestoreWithoutTokenOrProviderRequestsAndStillValidateDeviceBundleAndExpiry() async throws {
+        let fixture = try setup()
+        let account = try await fixture.engine.logIn(appleID: "user@example.com", password: "synthetic", twoFactorCode: { nil })
+        let request = ProvisioningRequest(accountID: account.id, teamID: "TEAM12345", ipaURL: fixture.ipa, deviceUDID: "SYNTHETIC-UDID")
+        _ = try await fixture.engine.provision(request: request, confirmRevocation: { _ in false })
+        try fixture.keychain.remove(account: "", provider: "engine", team: "", key: "session")
+        let offline = try ProvisioningEngineLive(configuration: .init(endpoint: URL(string: "https://disabled.invalid")!),
+            keychain: fixture.keychain, markerURL: fixture.marker, trustAnchors: [try data("profile-root", "cer")],
+            makeBackend: { _ in XCTFail("Cached access must not construct a network backend"); throw CancellationError() })
+        let restored = try await offline.restoreSigningAccount()
+        XCTAssertEqual(restored?.id, account.id)
+        let cached = try await offline.cachedMaterial(request: request)
+        XCTAssertEqual(cached?.profileData, try data("profile-valid", "mobileprovision"))
+        let foreignDevice = ProvisioningRequest(accountID: account.id, teamID: request.teamID, ipaURL: fixture.ipa, deviceUDID: "DIFFERENT-UDID")
+        do { _ = try await offline.cachedMaterial(request: foreignDevice); XCTFail("Foreign device accepted") } catch {}
+        let otherIPA = try makeIPA(bundle: "com.other.app")
+        do {
+            _ = try await offline.cachedMaterial(request: .init(accountID: account.id, teamID: request.teamID, ipaURL: otherIPA, deviceUDID: request.deviceUDID))
+            XCTFail("Foreign Bundle ID accepted")
+        } catch {}
+        let active = try XCTUnwrap(fixture.keychain.read(account: account.appleID, provider: "signing-material-v1", team: request.teamID, key: "active"))
+        var row = try XCTUnwrap(JSONSerialization.jsonObject(with: active) as? [String: Any])
+        var material = try XCTUnwrap(row["material"] as? [String: Any])
+        material["profileData"] = try data("profile-expired", "mobileprovision").base64EncodedString()
+        row["material"] = material
+        try fixture.keychain.write(JSONSerialization.data(withJSONObject: row), account: account.appleID, provider: "signing-material-v1", team: request.teamID, key: "active")
+        do { _ = try await offline.cachedMaterial(request: request); XCTFail("Expired signed profile accepted") } catch {}
+    }
+
+    private func makeIPA(bundle: String) throws -> URL {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let app = root.appendingPathComponent("staging/Payload/Test.app")
+        try FileManager.default.createDirectory(at: app, withIntermediateDirectories: true)
+        try PlistCodec.encodeXML(["CFBundleIdentifier": bundle, "CFBundleExecutable": "Test", "CFBundlePackageType": "APPL"])
+            .write(to: app.appendingPathComponent("Info.plist"))
+        try ProvisioningIPAPreflightTests.macho().write(to: app.appendingPathComponent("Test"))
+        let ipa = root.appendingPathComponent("test.ipa")
+        try FileManager.default.zipItem(at: root.appendingPathComponent("staging"), to: ipa, shouldKeepParent: false)
+        return ipa
+    }
     func testAuthenticatedMaterialCommitsAndFailedRetryPreservesActiveAndPendingKey() async throws {
         let fixture = try setup()
         let account = try await fixture.engine.logIn(appleID: "user@example.com", password: "synthetic", twoFactorCode: { nil })

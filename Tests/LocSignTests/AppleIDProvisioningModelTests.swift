@@ -3,6 +3,23 @@ import XCTest
 
 final class AppleIDProvisioningModelTests: XCTestCase {
     @MainActor
+    func testDisabledProviderRestoresCachedSigningAccountWithoutLogin() async {
+        let engine = AccountSheetEngineFixture()
+        let model = AppleIDProvisioningModel { _ in engine }
+        model.providerEnabled = false
+        await model.restore()
+        XCTAssertEqual(model.account?.appleID, "user@example.com")
+        XCTAssertEqual(model.teamID, "TEAM12345")
+        let calls = await engine.loginCount
+        XCTAssertEqual(calls, 0)
+    }
+    @MainActor
+    func testSafeProviderFailureRemainsActionableInUI() async {
+        let model = ready(AccountSheetEngineFixture(fail: true))
+        await model.logIn()
+        XCTAssertEqual(model.error, "Anisette 数据不可用，请检查提供方或重新登录")
+    }
+    @MainActor
     func testProviderConsentAndEnablementGateLogin() async {
         let engine = AccountSheetEngineFixture()
         let model = AppleIDProvisioningModel { _ in engine }
@@ -108,18 +125,23 @@ private actor AccountSheetEngineFixture: ProvisioningEngine {
     nonisolated let codeRequested = XCTestExpectation(description: "Code requested")
     private let twoFactor: Bool
     private let teams: [ProvisioningTeam]
+    private let fail: Bool
     private(set) var loginCount = 0
     private(set) var cancelCount = 0
     private(set) var suppliedCode: String?
-    init(twoFactor: Bool = false, teams: [ProvisioningTeam] = [.init(id: "TEAM12345", name: "Synthetic")]) {
-        self.twoFactor = twoFactor; self.teams = teams
+    init(twoFactor: Bool = false, teams: [ProvisioningTeam] = [.init(id: "TEAM12345", name: "Synthetic")], fail: Bool = false) {
+        self.twoFactor = twoFactor; self.teams = teams; self.fail = fail
     }
     func logIn(appleID: String, password: String, twoFactorCode: @escaping TwoFactorCodeProvider) async throws -> ProvisioningAccount {
         loginCount += 1
+        if fail { throw AppleAccountError.unavailable }
         if twoFactor { codeRequested.fulfill(); suppliedCode = await twoFactorCode() }
         return .init(id: UUID(), appleID: appleID, teams: teams)
     }
     func restoreAccount() async throws -> ProvisioningAccount? { nil }
+    func restoreSigningAccount() async throws -> ProvisioningAccount? {
+        .init(id: UUID(), appleID: "user@example.com", teams: [.init(id: "TEAM12345", name: "Synthetic")])
+    }
     func cancel() async { cancelCount += 1 }
     func logout(account: String) async throws {}
     func provision(request: ProvisioningRequest, confirmRevocation: @escaping @Sendable ([CertificateRevocation]) async -> Bool) async throws -> ProvisioningMaterial { throw ProvisioningError.cancelled }

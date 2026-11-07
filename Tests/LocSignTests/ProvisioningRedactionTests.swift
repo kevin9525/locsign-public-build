@@ -14,5 +14,6 @@ final class ProvisioningRedactionTests: XCTestCase {
     func testPreservesPublicProgressAndSafeFailureMessages() {
         XCTAssertEqual(ProvisioningRedaction.redact("材料已验证，等待签名"), "材料已验证，等待签名")
         XCTAssertEqual(ProvisioningRedaction.redact("Apple 服务连接失败（503）"), "Apple 服务连接失败（503）")
+        XCTAssertEqual(ProvisioningRedaction.redact("Anisette 数据不可用，请检查提供方或重新登录"), "Anisette 数据不可用，请检查提供方或重新登录")
     }
 }

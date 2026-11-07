@@ -4,6 +4,13 @@ import XCTest
 final class ProvisioningProfileValidatorTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
 
+    func testAppleKeychainAuthorizationWildcardIsNarrowedToOnlyTheApplicationClaim() throws {
+        let validated = try validate(name: "profile-keychain-allowlist")
+        let claims = try XCTUnwrap(PlistCodec.decode(validated.profile.signingEntitlements(for: "com.test.app")) as? [String: Any])
+        XCTAssertEqual(claims["keychain-access-groups"] as? [String], ["PREFIX1234.com.test.app"])
+        assertRejects(.metadata) { try self.validate(name: "profile-foreign-keychain") }
+    }
+
     func testAcceptsAuthenticatedProfileWithDifferentTeamAndAppPrefix() throws {
         let result = try validate()
         XCTAssertEqual(result.uuid, "00000000-1111-2222-3333-444444444444")

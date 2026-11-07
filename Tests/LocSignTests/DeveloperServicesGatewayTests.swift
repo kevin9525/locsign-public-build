@@ -5,6 +5,12 @@ import OpenAPIRuntime
 @testable import LocSign
 
 final class DeveloperServicesGatewayTests: XCTestCase {
+    func testCertificateDatesAcceptAppleFractionalSecondsAndPreserveTheExpiry() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setCertificateDate("2035-01-01T00:00:00.000+00:00")
+        let certificates = try await gateway(transport).listCertificates()
+        XCTAssertEqual(certificates.first?.expiry, Date(timeIntervalSince1970: 2_051_222_400))
+    }
     func testLegacyIssuerRecognizesOnlyExplicitQuotaCodeAndDoesNotExposeReason() async throws {
         for code in [7460, 3250] {
             let transport = DeveloperAPIFixture()
@@ -147,7 +153,9 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
     var requests: [Request] = []
     private var conflict = false
     private var legacyResultCode: Int? = 0
+    private var certificateDate = "2035-01-01T00:00:00Z"
     func setConflict() { conflict = true }
+    func setCertificateDate(_ value: String) { certificateDate = value }
     func setLegacyResultCode(_ code: Int) { legacyResultCode = code }
     nonisolated var asOpenAPITransport: any ClientTransport { self }
     func makeWebSocket(url: URL) async throws -> any WebSocketSession { throw DeveloperServicesError.invalidResponse }
@@ -193,10 +201,10 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
             payload = ["data": [["id": "cap", "type": "bundleIdCapabilities", "attributes": ["capabilityType": "IN_APP_PURCHASE"]]]]
             status = .ok
         } else if path == "/v1/certificates", method == "POST" {
-            payload = ["data": ["id": "cert", "type": "certificates", "attributes": ["serialNumber": "01", "name": "Synthetic", "expirationDate": "2035-01-01T00:00:00Z", "certificateContent": "AQ==", "certificateType": "DEVELOPMENT"]]]
+            payload = ["data": ["id": "cert", "type": "certificates", "attributes": ["serialNumber": "01", "name": "Synthetic", "expirationDate": certificateDate, "certificateContent": "AQ==", "certificateType": "DEVELOPMENT"]]]
             status = .created
         } else if path == "/v1/certificates" {
-            payload = ["data": [["id": "cert", "type": "certificates", "attributes": ["serialNumber": "01", "name": "Synthetic", "expirationDate": "2035-01-01T00:00:00Z", "certificateContent": "AQ==", "certificateType": "DEVELOPMENT"]]]]
+            payload = ["data": [["id": "cert", "type": "certificates", "attributes": ["serialNumber": "01", "name": "Synthetic", "expirationDate": certificateDate, "certificateContent": "AQ==", "certificateType": "DEVELOPMENT"]]]]
             status = .ok
         } else if path == "/v1/profiles", method == "POST" {
             payload = ["data": ["id": "profile", "type": "profiles", "attributes": ["profileContent": "Ag=="]]]

@@ -74,6 +74,7 @@ final class SigningViewModel: ObservableObject {
     }
     func provisionAndSign(using engine: any ProvisioningEngine, account: ProvisioningAccount, teamID: String,
                           providerAccepted: Bool,
+                          useCachedMaterial: Bool = false,
                           confirmRevocation: @escaping @Sendable ([CertificateRevocation]) async -> Bool = { _ in false }) async {
         guard !isSigning, !isImporting, !isInstalling, !isProvisioning else { return }
         guard providerAccepted else { error = "请先确认 Anisette 提供方及数据用途"; return }
@@ -117,6 +118,7 @@ final class SigningViewModel: ObservableObject {
         // Keep input locks until any in-flight signer has drained.
         await engine?.cancel()
     }
+    func clearProvisioningOutput() {}
 
     private func check(_ operation: UUID) throws {
         try Task.checkCancellation()

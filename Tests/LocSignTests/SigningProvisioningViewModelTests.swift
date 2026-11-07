@@ -3,6 +3,29 @@ import XCTest
 
 final class SigningProvisioningViewModelTests: XCTestCase {
     @MainActor
+    func testAccountOutputCleanupDeletesIPAAndClearsExpiryAndSuccessState() async throws {
+        let fixture = try await setup()
+        await fixture.model.verifyProvisioningDevice()
+        await fixture.model.provisionAndSign(using: fixture.engine, account: account, teamID: "TEAM12345", providerAccepted: true)
+        XCTAssertNotNil(fixture.model.outputURL)
+        fixture.model.clearProvisioningOutput()
+        XCTAssertNil(fixture.model.outputURL)
+        XCTAssertNil(fixture.model.profileExpiry)
+        XCTAssertNil(fixture.model.certificateExpiry)
+        XCTAssertFalse(fixture.model.installSucceeded)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.signedIPA.path))
+    }
+    @MainActor
+    func testCachedSigningWorksWithoutProviderConsentAndNeverRequestsNewMaterials() async throws {
+        let fixture = try await setup()
+        await fixture.model.verifyProvisioningDevice()
+        await fixture.model.provisionAndSign(using: fixture.engine, account: account, teamID: "TEAM12345",
+            providerAccepted: false, useCachedMaterial: true)
+        XCTAssertEqual(fixture.model.outputURL, fixture.signedIPA)
+        let requests = await fixture.engine.requests
+        XCTAssertTrue(requests.isEmpty)
+    }
+    @MainActor
     func testConsentAndPairedDeviceAreRequiredBeforeAnyMaterialRequest() async throws {
         let fixture = try await setup()
         await fixture.model.provisionAndSign(using: fixture.engine, account: account, teamID: "TEAM12345", providerAccepted: false)
@@ -143,5 +166,9 @@ private actor SigningProvisioningEngineFixture: ProvisioningEngine {
         }
         return ProvisioningMaterial(privateKeyPEM: "synthetic-private-key", profileData: Data("synthetic-profile".utf8),
             certificateExpiry: Date().addingTimeInterval(3600), profileExpiry: Date().addingTimeInterval(3600))
+    }
+    func cachedMaterial(request: ProvisioningRequest) async throws -> ProvisioningMaterial? {
+        ProvisioningMaterial(privateKeyPEM: "synthetic-private-key", profileData: Data("synthetic-profile".utf8),
+            certificateExpiry: .distantFuture, profileExpiry: .distantFuture)
     }
 }
