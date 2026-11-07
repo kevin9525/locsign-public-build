@@ -74,7 +74,7 @@ final class DeveloperServicesGatewayTests: XCTestCase {
             let issuer = LegacyDevelopmentCertificateIssuer(auth: gateway.auth, provider: gateway.provider, client: gateway.client)
             do { _ = try await issuer.issue(csr: "synthetic-csr"); XCTFail("Rejected issuance accepted") }
             catch {
-                XCTAssertEqual(error as? DeveloperServicesError, code == 7460 ? .certificateQuota : .rejected(code))
+                XCTAssertEqual(error as? DeveloperServicesError, code == 7460 ? .certificateQuota : .appleRejected(code))
                 XCTAssertFalse(error.localizedDescription.contains("synthetic-sensitive-response"))
             }
         }
@@ -134,7 +134,7 @@ final class DeveloperServicesGatewayTests: XCTestCase {
             _ = try await gateway(transport).createDevelopmentCertificate(csr: "synthetic-csr")
             XCTFail("Conflict accepted")
         } catch {
-            XCTAssertEqual(error as? DeveloperServicesError, .rejected(409))
+            XCTAssertEqual(error as? DeveloperServicesFailure, .init(step: .createCertificate, reason: .rejected(409)))
             XCTAssertFalse(error.localizedDescription.contains("synthetic-sensitive-response"))
         }
     }

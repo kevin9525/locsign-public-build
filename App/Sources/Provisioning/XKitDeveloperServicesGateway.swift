@@ -10,7 +10,7 @@ struct XKitDeveloperServicesGateway: DeveloperServicesGateway {
     let client: any HTTPClientProtocol
 
     func listDevices() async throws -> [DeveloperDevice] {
-        try await call { api in
+        try await call(.listDevices) { api in
             var result: [DeveloperDevice] = []
             for try await page in DeveloperAPIPages(request: {
                 try await api.devicesGetCollection(query: .init(filter_lbrack_platform_rbrack_: [.ios])).ok.body.json
@@ -21,14 +21,14 @@ struct XKitDeveloperServicesGateway: DeveloperServicesGateway {
         }
     }
     func registerDevice(udid: String) async throws -> DeveloperDevice {
-        try await call { api in
+        try await call(.registerDevice) { api in
             let response = try await api.devicesCreateInstance(body: .json(.init(data: .init(
                 _type: .devices, attributes: .init(name: "LocSign iPhone", platform: .init(.ios), udid: udid)))))
             return try Self.device(response.created.body.json.data)
         }
     }
     func findExactBundleID(_ identifier: String) async throws -> DeveloperBundle? {
-        try await call { api in
+        try await call(.findBundle) { api in
             var matches: [Components.Schemas.BundleId] = []
             for try await page in DeveloperAPIPages(request: {
                 try await api.bundleIdsGetCollection(query: .init(filter_lbrack_identifier_rbrack_: [identifier])).ok.body.json
@@ -41,14 +41,14 @@ struct XKitDeveloperServicesGateway: DeveloperServicesGateway {
         }
     }
     func createBundleID(_ identifier: String, name: String) async throws -> DeveloperBundle {
-        try await call { api in
+        try await call(.createBundle) { api in
             let response = try await api.bundleIdsCreateInstance(body: .json(.init(data: .init(
                 _type: .bundleIds, attributes: .init(name: name, platform: .init(.ios), identifier: identifier)))))
             return try await Self.bundle(response.created.body.json.data, api: api)
         }
     }
     func listCertificates() async throws -> [DeveloperCertificate] {
-        try await call { api in
+        try await call(.listCertificates) { api in
             var result: [DeveloperCertificate] = []
             for try await page in DeveloperAPIPages(request: {
                 try await api.certificatesGetCollection(query: .init(filter_lbrack_certificateType_rbrack_: [.development, .iosDevelopment])).ok.body.json
@@ -63,21 +63,25 @@ struct XKitDeveloperServicesGateway: DeveloperServicesGateway {
         }
     }
     func createDevelopmentCertificate(csr: String) async throws -> DeveloperCertificate {
-        let der = try await LegacyDevelopmentCertificateIssuer(auth: auth, provider: provider, client: client).issue(csr: csr)
-        // Legacy request IDs are not REST resource IDs. Resolve the certificate
-        // by its exact DER before associating it with a profile or deleting it.
-        guard let issued = try await listCertificates().first(where: { $0.der == der }) else {
-            throw DeveloperServicesError.invalidResponse
+        do {
+            let der = try await LegacyDevelopmentCertificateIssuer(auth: auth, provider: provider, client: client).issue(csr: csr)
+            // Legacy request IDs are not REST resource IDs. Resolve the certificate
+            // by its exact DER before associating it with a profile or deleting it.
+            guard let issued = try await listCertificates().first(where: { $0.der == der }) else {
+                throw DeveloperServicesError.invalidResponse
+            }
+            return issued
+        } catch {
+            throw Self.failure(error, at: .createCertificate)
         }
-        return issued
     }
     func revokeCertificate(id: String) async throws {
-        try await call { api in
+        try await call(.revokeCertificate) { api in
             _ = try await api.certificatesDeleteInstance(path: .init(id: id)).noContent
         }
     }
     func listProfiles(bundleID: String) async throws -> [DeveloperProfile] {
-        try await call { api in
+        try await call(.listProfiles) { api in
             var result: [DeveloperProfile] = []
             for try await page in DeveloperAPIPages(request: {
                 try await api.bundleIdsProfilesGetToManyRelated(path: .init(id: bundleID)).ok.body.json
@@ -88,7 +92,7 @@ struct XKitDeveloperServicesGateway: DeveloperServicesGateway {
         }
     }
     func createDevelopmentProfile(bundleID: String, certificateID: String, deviceID: String) async throws -> DeveloperProfile {
-        try await call { api in
+        try await call(.createProfile) { api in
             let response = try await api.profilesCreateInstance(body: .json(.init(data: .init(
                 _type: .profiles,
                 attributes: .init(name: "LocSign " + bundleID, profileType: .init(.iosAppDevelopment)),
@@ -99,7 +103,8 @@ struct XKitDeveloperServicesGateway: DeveloperServicesGateway {
         }
     }
 
-    private func call<T: Sendable>(_ action: @Sendable (DeveloperAPIClient) async throws -> T) async throws -> T {
+    private func call<T: Sendable>(_ step: DeveloperServicesStep,
+                                   _ action: @Sendable (DeveloperAPIClient) async throws -> T) async throws -> T {
         do {
             try Task.checkCancellation()
             return try await withDependencies { $0.anisetteDataProvider = provider } operation: {
@@ -113,17 +118,25 @@ struct XKitDeveloperServicesGateway: DeveloperServicesGateway {
                 return value
             }
         } catch {
-            if Task.isCancelled || error is CancellationError { throw CancellationError() }
-            if let error = Self.serviceError(error) { throw error }
-            if error is ProvisioningNetworkError || error is URLError { throw ProvisioningError.remote("网络连接失败，请稍后重试") }
-            throw DeveloperServicesError.invalidResponse
+            throw Self.failure(error, at: step)
         }
     }
-    private static func serviceError(_ error: Error) -> DeveloperServicesError? {
-        if let error = error as? DeveloperServicesError { return error }
-        // OpenAPI wraps a middleware error without changing its original value.
-        if let error = error as? ClientError { return serviceError(error.underlyingError) }
-        return nil
+    private static func failure(_ error: Error, at step: DeveloperServicesStep) -> Error {
+        if Task.isCancelled || error is CancellationError { return CancellationError() }
+        // Unwrap before classifying: middleware/transport cancellation and network
+        // failures are wrapped by OpenAPI too, not just HTTP service rejections.
+        if let error = error as? ClientError { return failure(error.underlyingError, at: step) }
+        if let error = error as? DeveloperServicesFailure { return error }
+        if let error = error as? DeveloperServicesError {
+            // Preserve the exact quota signal consumed by the provisioner's
+            // confirmation flow. Ordinary HTTP conflicts never become quota.
+            if error == .certificateQuota { return error }
+            return DeveloperServicesFailure(step: step, reason: error)
+        }
+        if error is ProvisioningNetworkError || error is URLError {
+            return DeveloperServicesFailure(step: step, reason: .network)
+        }
+        return DeveloperServicesFailure(step: step, reason: .invalidResponse)
     }
     private static func device(_ value: Components.Schemas.Device) throws -> DeveloperDevice {
         guard !value.id.isEmpty, let udid = value.attributes?.udid, !udid.isEmpty,
@@ -133,14 +146,18 @@ struct XKitDeveloperServicesGateway: DeveloperServicesGateway {
     private static func bundle(_ value: Components.Schemas.BundleId, api: DeveloperAPIClient) async throws -> DeveloperBundle {
         guard !value.id.isEmpty, let identifier = value.attributes?.identifier, !identifier.isEmpty else { throw DeveloperServicesError.invalidResponse }
         var capabilities: [String] = []
-        for try await page in DeveloperAPIPages(request: {
-            try await api.bundleIdsBundleIdCapabilitiesGetToManyRelated(path: .init(id: value.id)).ok.body.json
-        }, next: { $0.links.next }) {
-            for capability in page.data {
-                guard let type = capability.attributes?.capabilityType,
-                      let name = type.value1?.rawValue ?? type.value2 else { throw DeveloperServicesError.invalidResponse }
-                capabilities.append(name)
+        do {
+            for try await page in DeveloperAPIPages(request: {
+                try await api.bundleIdsBundleIdCapabilitiesGetToManyRelated(path: .init(id: value.id)).ok.body.json
+            }, next: { $0.links.next }) {
+                for capability in page.data {
+                    guard let type = capability.attributes?.capabilityType,
+                          let name = type.value1?.rawValue ?? type.value2 else { throw DeveloperServicesError.invalidResponse }
+                    capabilities.append(name)
+                }
             }
+        } catch {
+            throw failure(error, at: .readCapabilities)
         }
         return DeveloperBundle(id: value.id, identifier: identifier, capabilities: capabilities.sorted())
     }

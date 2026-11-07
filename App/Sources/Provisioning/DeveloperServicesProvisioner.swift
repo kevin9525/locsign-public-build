@@ -11,7 +11,41 @@ struct DeveloperCertificate: Codable, Sendable, Equatable {
     var revocation: CertificateRevocation { .init(id: id, serialNumber: serial, name: name, expiry: expiry) }
 }
 struct DeveloperProfile: Sendable { let id: String; let content: Data }
-enum DeveloperServicesError: Error, Equatable { case certificateQuota, rejected(Int), invalidResponse, remoteChanged }
+enum DeveloperServicesError: LocalizedError, Equatable {
+    case certificateQuota, rejected(Int), appleRejected(Int), invalidResponse, remoteChanged, network
+
+    var errorDescription: String? {
+        switch self {
+        case .certificateQuota: return "Apple 开发者服务拒绝申请：开发证书数量已达上限"
+        case .rejected(let status): return "Apple Developer Services 请求被拒绝（HTTP \(status)）"
+        case .appleRejected(let code): return "Apple Developer Services 请求被拒绝（Apple \(code)）"
+        case .invalidResponse: return "Apple Developer Services 返回的数据无效，无法继续申请材料"
+        case .remoteChanged: return "Apple Developer Services 证书列表发生变化，请重新申请"
+        case .network: return "网络连接失败，请检查连接后重试"
+        }
+    }
+}
+
+enum DeveloperServicesStep: String, Sendable {
+    case listDevices = "查询设备"
+    case registerDevice = "注册设备"
+    case findBundle = "查询应用标识"
+    case createBundle = "注册应用标识"
+    case readCapabilities = "查询应用权限"
+    case listCertificates = "查询开发证书"
+    case createCertificate = "申请开发证书"
+    case revokeCertificate = "撤销开发证书"
+    case listProfiles = "查询描述文件"
+    case createProfile = "创建描述文件"
+}
+
+// Only fixed operation names and safe error values cross the UI boundary.
+// Raw OpenAPI errors can contain headers, request bodies and server responses.
+struct DeveloperServicesFailure: LocalizedError, Equatable {
+    let step: DeveloperServicesStep
+    let reason: DeveloperServicesError
+    var errorDescription: String? { "\(step.rawValue)失败：\(reason.localizedDescription)" }
+}
 
 protocol DeveloperServicesGateway: Sendable {
     func listDevices() async throws -> [DeveloperDevice]

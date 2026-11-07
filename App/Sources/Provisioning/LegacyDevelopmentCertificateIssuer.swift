@@ -21,11 +21,11 @@ struct LegacyDevelopmentCertificateIssuer: Sendable {
         } catch {
             if Task.isCancelled || error is CancellationError { throw CancellationError() }
             if let failure = error as? DeveloperServicesAPIVersionLegacy.Error {
-                throw failure.code == 7460 ? DeveloperServicesError.certificateQuota : .rejected(failure.code)
+                throw failure.code == 7460 ? DeveloperServicesError.certificateQuota : .appleRejected(failure.code)
             }
             if let failure = error as? HTTPResponseError { throw DeveloperServicesError.rejected(failure.status.code) }
             if error is ProvisioningNetworkError || error is URLError {
-                throw ProvisioningError.remote("网络连接失败，请稍后重试")
+                throw DeveloperServicesError.network
             }
             throw DeveloperServicesError.invalidResponse
         }
