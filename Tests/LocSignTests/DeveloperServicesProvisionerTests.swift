@@ -154,6 +154,22 @@ final class DeveloperServicesProvisionerTests: XCTestCase {
         }
     }
 
+    func testPostIssuanceLookupRejectionKeepsRecoveryState() async throws {
+        let fixture = try setup(cached: false)
+        await fixture.gateway.setIssuanceFailure(.rejected(401), step: .listCertificates)
+        do { _ = try await run(fixture); XCTFail("Lookup rejection ignored") }
+        catch {
+            XCTAssertEqual(error as? DeveloperServicesFailure,
+                .init(step: .listCertificates, reason: .rejected(401)))
+        }
+        let saved = try await fixture.store.loadPending()
+        XCTAssertEqual(saved?.awaitingCertificate, true)
+        do { _ = try await run(fixture); XCTFail("Certificate request retried after lookup failure") }
+        catch { XCTAssertEqual(error as? DeveloperServicesError, .certificateRecoveryPending) }
+        let mutations = await fixture.gateway.mutations
+        XCTAssertEqual(mutations, ["certificate"])
+    }
+
     func testFailedRecoveryMarkerWriteNeverSendsCSR() async throws {
         let fixture = try setup(cached: false)
         await fixture.store.setFailAwaitingWrite()
@@ -348,6 +364,7 @@ private actor ProvisioningGatewayFixture: DeveloperServicesGateway {
     private var detailCancellation = false
     private var cancelOnIssuance = false
     private var issuanceFailure: DeveloperServicesError?
+    private var issuanceFailureStep: DeveloperServicesStep?
     var detailReads: [String] = []
     func setMissingIssuanceContent() { missingIssuanceContent = true; certs = [] }
     func setMetadataOnlyCertificates() { metadataOnly = true }
@@ -355,8 +372,9 @@ private actor ProvisioningGatewayFixture: DeveloperServicesGateway {
     func setDetailIdentityChanged() { detailIdentityChanged = true }
     func setDetailCancellation() { detailCancellation = true }
     func setCancelOnIssuance(_ value: Bool) { cancelOnIssuance = value }
-    func setIssuanceFailure(_ value: DeveloperServicesError?) {
+    func setIssuanceFailure(_ value: DeveloperServicesError?, step: DeveloperServicesStep? = nil) {
         issuanceFailure = value
+        issuanceFailureStep = step
         if value != nil { certs = [] }
     }
     func setDuplicateMatchingCertificate() {
@@ -386,7 +404,10 @@ private actor ProvisioningGatewayFixture: DeveloperServicesGateway {
         guard let pending = await store.pending, pending.csr == csr, !pending.privateKeyPEM.isEmpty else { throw DeveloperServicesError.invalidResponse }
         mutations.append("certificate")
         if cancelOnIssuance { withUnsafeCurrentTask { $0?.cancel() } }
-        if let issuanceFailure { throw issuanceFailure }
+        if let issuanceFailure {
+            if let issuanceFailureStep { throw DeveloperServicesFailure(step: issuanceFailureStep, reason: issuanceFailure) }
+            throw issuanceFailure
+        }
         if missingIssuanceContent {
             certs = [cert]
             throw DeveloperServicesFailure(step: .createCertificate, reason: .certificateResponse(.missingContent))
