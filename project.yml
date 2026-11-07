@@ -7,8 +7,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.1.4"
-    CURRENT_PROJECT_VERSION: "5"
+    MARKETING_VERSION: "0.2.0"
+    CURRENT_PROJECT_VERSION: "6"
     GENERATE_INFOPLIST_FILE: NO
 packages:
   OpenSSL:
@@ -49,8 +49,8 @@ targets:
       path: App/Sources/Info.plist
       properties:
         CFBundleDisplayName: LocSign
-        CFBundleShortVersionString: "0.1.4"
-        CFBundleVersion: "5"
+        CFBundleShortVersionString: "0.2.0"
+        CFBundleVersion: "6"
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         NSLocalNetworkUsageDescription: 检测本机设备服务连接，用于验证手机内签名安装和定位功能。
