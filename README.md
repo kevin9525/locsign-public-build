@@ -2,11 +2,11 @@
 
 iOS 18 签名与定位工具的开发中项目，参考 NB 助手的核心使用流程。
 
-当前版本 **0.2.0 / build 6** 接入免费 Apple ID 自动签名：提供方披露与同意、登录与六位验证码、免费 iOS 团队选择、证书及描述文件申请/复用、配对 TLS 设备核对，以及签名导出。保留 P12/PEM 手动导入和已有安装链路。证书撤销必须确认精确列表；不会自动删除 profile、修改 capability 或改 Bundle ID。
+当前版本 **0.2.0 / build 6** 接入免费 Apple ID 自动签名：提供方披露与同意、登录与六位验证码、免费 iOS 团队选择、证书及描述文件申请/复用、配对 TLS 设备核对、本机有效材料复用，以及签名导出。保留 P12/PEM 手动导入和已有安装链路。证书撤销必须确认精确列表；不会自动删除 profile、修改 capability 或改 Bundle ID。
 
-自动申请当前接受无扩展/嵌套 App、未加密的单一 arm64 IPA；FAT 主程序、DER entitlement 与额外 capability 暂不支持。CI 使用合成数据，169 项 XCTest、4 项打包测试与双平台编译已通过[验证运行](https://github.com/kevin9525/locsign-public-build/actions/runs/42262193781)。真实 Apple 登录、材料申请、安装及启动仍待[真机验收](docs/apple-id-acceptance.md)。配对连接此前已在 iPhone 15 Pro Max / iOS 18.7.8 通过；全局定位仍未接入。
+自动申请当前接受无扩展/嵌套 App、未加密的单一 arm64 IPA；FAT 主程序、DER entitlement 与额外 capability 暂不支持。CI 使用合成数据，176 项 XCTest、4 项打包测试与双平台编译已通过[验证运行](https://github.com/kevin9525/locsign-public-build/actions/runs/42321756131)。真实 Apple 登录、材料申请、安装及启动仍待[真机验收](docs/apple-id-acceptance.md)。配对连接此前已在 iPhone 15 Pro Max / iOS 18.7.8 通过；全局定位仍未接入。
 
-Anisette 默认地址为 `https://mac-ani.jkcoxson.com`。使用前需同意 UUID、ADI 握手消息/ADI blob 和来源 IP 披露；可换地址或关闭。密码仅用于本次 Apple 登录，会话和私钥保存到本机专用 Keychain。覆盖更新保留资料；明确退出清除该账号资料。
+Anisette 默认地址为 `https://mac-ani.jkcoxson.com`。使用前需同意 UUID、ADI 握手消息/ADI blob 和来源 IP 披露；可换地址或关闭；已有材料可在重新校验后本机签名，无需访问提供方或 Apple。密码仅用于本次 Apple 登录，会话和私钥保存到本机专用 Keychain。覆盖更新保留资料；明确退出清除该账号资料和当前自动签名产物。
 
 ## 构建
 
