@@ -5,6 +5,61 @@ import OpenAPIRuntime
 @testable import LocSign
 
 final class DeveloperServicesGatewayTests: XCTestCase {
+    func testBundleRejectionReportsStageAndHTTPStatusWithoutServerDetails() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setConflict()
+        do { _ = try await gateway(transport).findExactBundleID("com.test.app"); XCTFail("Rejection accepted") }
+        catch {
+            let message = error.localizedDescription
+            XCTAssertTrue(message.contains("查询应用标识"), message)
+            XCTAssertTrue(message.contains("HTTP 409"), message)
+            XCTAssertFalse(message.contains("synthetic-sensitive-response"))
+        }
+    }
+
+    func testMalformedResponseIdentifiesOperationWithoutIncludingResponseData() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setMalformedResponse()
+        do { _ = try await gateway(transport).listDevices(); XCTFail("Malformed response accepted") }
+        catch {
+            let message = error.localizedDescription
+            XCTAssertTrue(message.contains("查询设备"), message)
+            XCTAssertTrue(message.contains("返回的数据无效"), message)
+            XCTAssertFalse(message.contains("synthetic-sensitive-response"))
+        }
+    }
+
+    func testWrappedTransportFailureRemainsNetworkFailureWithOperation() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setTransportFailure()
+        do { _ = try await gateway(transport).listCertificates(); XCTFail("Network failure accepted") }
+        catch {
+            let message = error.localizedDescription
+            XCTAssertTrue(message.contains("查询开发证书"), message)
+            XCTAssertTrue(message.contains("网络连接失败"), message)
+            XCTAssertFalse(message.contains("返回的数据无效"), message)
+        }
+    }
+
+    func testWrappedCancellationDoesNotBecomeAnInvalidResponse() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setCancellation()
+        do { _ = try await gateway(transport).listDevices(); XCTFail("Cancellation accepted") }
+        catch { XCTAssertTrue(error is CancellationError, String(describing: error)) }
+    }
+
+    func testLegacyIssuanceRejectionReportsAppleCodeAndStage() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setLegacyResultCode(3250)
+        do { _ = try await gateway(transport).createDevelopmentCertificate(csr: "synthetic-csr"); XCTFail("Rejection accepted") }
+        catch {
+            let message = error.localizedDescription
+            XCTAssertTrue(message.contains("申请开发证书"), message)
+            XCTAssertTrue(message.contains("Apple 3250"), message)
+            XCTAssertFalse(message.contains("synthetic-sensitive-response"))
+        }
+    }
+
     func testCertificateDatesAcceptAppleFractionalSecondsAndPreserveTheExpiry() async throws {
         let transport = DeveloperAPIFixture()
         await transport.setCertificateDate("2035-01-01T00:00:00.000+00:00")
@@ -154,6 +209,12 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
     private var conflict = false
     private var legacyResultCode: Int? = 0
     private var certificateDate = "2035-01-01T00:00:00Z"
+    private var malformedResponse = false
+    private var transportFailure = false
+    private var cancellation = false
+    func setMalformedResponse() { malformedResponse = true }
+    func setTransportFailure() { transportFailure = true }
+    func setCancellation() { cancellation = true }
     func setConflict() { conflict = true }
     func setCertificateDate(_ value: String) { certificateDate = value }
     func setLegacyResultCode(_ code: Int) { legacyResultCode = code }
@@ -161,6 +222,12 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
     func makeWebSocket(url: URL) async throws -> any WebSocketSession { throw DeveloperServicesError.invalidResponse }
     func withEphemeralClient<T>(perform: (any HTTPClientProtocol) async throws -> T) async throws -> T { try await perform(self) }
     func send(_ request: XKit.HTTPRequest, body: HTTPBody?, baseURL: URL, operationID: String) async throws -> (XKit.HTTPResponse, HTTPBody?) {
+        if cancellation { throw CancellationError() }
+        if transportFailure { throw ProvisioningNetworkError.transport }
+        if malformedResponse {
+            return (.init(status: .ok, headerFields: [.contentType: "application/json"]),
+                    HTTPBody(Data("synthetic-sensitive-response".utf8)))
+        }
         let bytes: Data
         if let body { bytes = try await body.reduce(into: Data()) { $0.append(contentsOf: $1) } } else { bytes = Data() }
         let json = ((try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any]) ??
