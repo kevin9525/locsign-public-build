@@ -5,6 +5,24 @@ import OpenAPIRuntime
 @testable import LocSign
 
 final class DeveloperServicesGatewayTests: XCTestCase {
+    func testRegistrationConflictDistinguishesUnavailableIdentifierFromRegistrationLimit() async throws {
+        for (detail, expected) in [
+            ("An App ID with Identifier 'synthetic-sensitive-response' is not available. Please enter a different string.", "应用标识不可用"),
+            ("You may register a maximum of 10 App IDs every 7 days. synthetic-sensitive-response", "应用标识注册数量")
+        ] {
+            let transport = DeveloperAPIFixture()
+            await transport.setConflictDetail(detail)
+            do { _ = try await gateway(transport).createBundleID("com.test.app", name: "Test"); XCTFail("Conflict accepted") }
+            catch {
+                XCTAssertTrue(error.localizedDescription.contains("注册应用标识"), error.localizedDescription)
+                XCTAssertTrue(error.localizedDescription.contains("HTTP 409"), error.localizedDescription)
+                XCTAssertTrue(error.localizedDescription.contains(expected), error.localizedDescription)
+                XCTAssertFalse(error.localizedDescription.contains("synthetic-sensitive-response"))
+                XCTAssertNotEqual(error as? DeveloperServicesError, .certificateQuota)
+            }
+        }
+    }
+
     func testBundleRejectionReportsStageAndHTTPStatusWithoutServerDetails() async throws {
         let transport = DeveloperAPIFixture()
         await transport.setConflict()
@@ -207,6 +225,7 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
     struct Request: Sendable { let host: String?; let path: String; let token: String?; let team: String?; let body: String?; let override: String? }
     var requests: [Request] = []
     private var conflict = false
+    private var conflictDetail = "synthetic-sensitive-response"
     private var legacyResultCode: Int? = 0
     private var certificateDate = "2035-01-01T00:00:00Z"
     private var malformedResponse = false
@@ -216,6 +235,7 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
     func setTransportFailure() { transportFailure = true }
     func setCancellation() { cancellation = true }
     func setConflict() { conflict = true }
+    func setConflictDetail(_ value: String) { conflict = true; conflictDetail = value }
     func setCertificateDate(_ value: String) { certificateDate = value }
     func setLegacyResultCode(_ code: Int) { legacyResultCode = code }
     nonisolated var asOpenAPITransport: any ClientTransport { self }
@@ -244,7 +264,7 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
             return (.init(status: .ok), HTTPBody(try PropertyListSerialization.data(fromPropertyList: payload, format: .xml, options: 0)))
         }
         if conflict {
-            let payload = ["errors": [["status": "409", "code": "ENTITY_ERROR", "title": "synthetic-sensitive-response", "detail": "synthetic-sensitive-response"]]]
+            let payload = ["errors": [["status": "409", "code": "ENTITY_ERROR", "title": "synthetic-sensitive-response", "detail": conflictDetail]]]
             return (.init(status: .conflict, headerFields: [.contentType: "application/json"]), HTTPBody(try JSONSerialization.data(withJSONObject: payload)))
         }
         if path == "/v1/certificates/explicit-cert", method == "DELETE" {

@@ -6,6 +6,36 @@ import ZIPFoundation
 /// fixture 全部预生成入库——key/cert/CMS profile（openssl cms 生成）、二进制用测试宿主 App 自己的 MachO。
 /// 注意：zsign 要求 profile 为真 CMS 结构（d2i_CMS_bio 解析），纯 XML 合成品会被拒。
 final class IPAPackerTests: XCTestCase {
+    @MainActor
+    func testExplicitSigningIdentifierRetargetsOnlyTheSignedCopy() async throws {
+        let raw = try Data(contentsOf: fixture("test-profile", "mobileprovision"))
+        let original = ProvisioningMaterial(privateKeyPEM: try String(contentsOf: fixture("test-key", "pem"), encoding: .utf8),
+            profileData: raw, certificateExpiry: .distantFuture, profileExpiry: .distantFuture)
+        var fields = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as? [String: Any])
+        fields["signingBundleID"] = "com.test.app"
+        let material = try JSONDecoder().decode(ProvisioningMaterial.self, from: JSONSerialization.data(withJSONObject: fields))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let app = root.appendingPathComponent("Payload/Demo.app")
+        try FileManager.default.createDirectory(at: app, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: XCTUnwrap(Bundle.main.executableURL), to: app.appendingPathComponent("Demo"))
+        try PlistCodec.encodeXML(["CFBundleIdentifier": "com.original.app", "CFBundleExecutable": "Demo"])
+            .write(to: app.appendingPathComponent("Info.plist"))
+        let ipa = root.appendingPathComponent("original.ipa")
+        try IPAPacker.makeZip(fromDirectory: root.appendingPathComponent("Payload"), to: ipa)
+        let originalBytes = try Data(contentsOf: ipa)
+        do {
+            let output = try await SigningViewModel.signProvisionedMaterial(ipa, material)
+            defer { try? FileManager.default.removeItem(at: output) }
+            let signed = try IPAPacker.unpack(output, into: root.appendingPathComponent("check"))
+            let info = try XCTUnwrap(PlistCodec.decode(Data(contentsOf: signed.appendingPathComponent("Info.plist"))) as? [String: Any])
+            XCTAssertEqual(info["CFBundleIdentifier"] as? String, "com.test.app")
+            XCTAssertEqual(try Data(contentsOf: signed.appendingPathComponent("embedded.mobileprovision")), raw)
+            XCTAssertTrue(SigningEngine.shared.isSigned(signed.appendingPathComponent("Demo").path))
+            XCTAssertEqual(try Data(contentsOf: ipa), originalBytes)
+        } catch { XCTFail("Explicit signing identifier was not applied: \(error.localizedDescription)") }
+    }
+
     private func fixture(_ name: String, _ ext: String) throws -> URL {
         try XCTUnwrap(Bundle(for: IPAPackerTests.self).url(forResource: name, withExtension: ext),
                       "fixture \(name).\(ext) 缺失")

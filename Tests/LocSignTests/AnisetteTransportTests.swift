@@ -4,6 +4,18 @@ import OpenAPIRuntime
 @testable import LocSign
 
 final class AnisetteTransportTests: XCTestCase {
+    func testAppleRegistrationRejectionKeepsOnlySafeClassification() async throws {
+        let client = XKitHTTPClientAdapter(boundary: .apple, protocolClasses: [RegistrationConflictURLProtocol.self])
+        do {
+            _ = try await client.makeRequest(XKit.HTTPRequest(url: URL(string: "https://developerservices2.apple.com/services/v1/bundleIds")!))
+            XCTFail("Known registration rejection should expose its safe classification")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("应用标识不可用"), error.localizedDescription)
+            XCTAssertTrue(error.localizedDescription.contains("HTTP 409"), error.localizedDescription)
+            XCTAssertFalse(String(describing: error).contains("synthetic-server-secret"))
+        }
+    }
+
     func testOpenAPIRelativeRequestUsesValidatedBaseURLAndPreservesBasePath() async throws {
         let config = try AnisetteProviderConfiguration(endpoint: URL(string: "https://fixture.invalid")!)
         let client = XKitHTTPClientAdapter(boundary: .provider(config), protocolClasses: [AnisetteURLProtocol.self])
@@ -70,6 +82,19 @@ final class AnisetteTransportTests: XCTestCase {
         do { _ = try await client.makeWebSocket(url: URL(string: "wss://external.invalid/socket")!); XCTFail("Wrong origin accepted") }
         catch { XCTAssertEqual(error as? ProvisioningNetworkError, .rejected) }
     }
+}
+
+private final class RegistrationConflictURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let response = HTTPURLResponse(url: request.url!, statusCode: 409, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+        let data = Data(#"{"errors":[{"code":"ENTITY_ERROR.ATTRIBUTE.INVALID","detail":"An App ID with Identifier 'synthetic-server-secret' is not available. Please enter a different string."}]}"#.utf8)
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }
 
 private final class AnisetteURLProtocol: URLProtocol {
