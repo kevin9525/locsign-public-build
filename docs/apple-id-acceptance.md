@@ -47,3 +47,7 @@
 兼容性回归：0.2.0 在 Feather.ipa 预检查时提示“代码签名容器无效”。对照官方 Feather v2.9.0 发行包发现，代码签名预留区为 186,336 字节，内部有效容器为 168,327 字节，余下 18,009 字节是零填充。0.2.1 / build 7 按内部声明长度约束索引及子区块，允许有效容器后的预留填充；权限和加密限制继续生效。用户原 IPA 的版本尚未确认，更新后的实际签名与安装结果需重试记录。
 
 0.2.1 交付验证：[最终 CI](https://github.com/kevin9525/locsign-public-build/actions/runs/42346306254) 的 179 项 XCTest、4 项打包测试及模拟器/设备构建均通过，最终未签名 IPA 的版本、资源和 CRC 已核验。详细根因与回归记录见 [Feather 兼容修复](spike/2026-11-07-feather-preflight-fix.md)；此次构建不构成真机材料申请、签名或安装成功的证据。
+
+后续真机反馈：配对验证通过后，点击“获取材料并签名”直接显示 `The operation couldn’t be completed. (LocSign.DeveloperServicesError error 0.)`，此前未出现撤销开发证书确认列表。旧错误展示丢失具体请求步骤及 HTTP/Apple 返回码，当前无法确定远端拒绝原因。0.2.2 / build 8 为错误诊断修复，复测需记录完整新错误，或分别确认材料申请、签名、安装和启动结果。调查及验证记录见 [开发者服务错误诊断](spike/2026-11-07-developer-services-errors.md)。
+
+0.2.2 交付验证：[CI](https://github.com/kevin9525/locsign-public-build/actions/runs/42352560129) 的 185 项 XCTest、4 项打包测试、模拟器/设备构建和打包步骤均通过。已下载最终未签名 IPA 并核验 0.2.2 / build 8、资源和 CRC。此版本确认修复的是错误信息展示；实际 Apple 拒绝原因和完整签名安装结果仍待真机反馈。
