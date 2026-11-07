@@ -5,6 +5,16 @@ import OpenAPIRuntime
 @testable import LocSign
 
 final class DeveloperServicesGatewayTests: XCTestCase {
+    func testLegacyCertificateInAttributesIsDecodedBeforeResourceResolution() async throws {
+        let der = try certificateFixture()
+        let transport = DeveloperAPIFixture()
+        await transport.setIssuedCertificate(der, listedSerial: "69", listedContent: nil)
+        try await transport.setLegacyPayload(["resultCode": 0, "certRequest": ["attributes": ["certificateContent": der.base64EncodedString()]]])
+        let certificate = try await gateway(transport).createDevelopmentCertificate(csr: "synthetic-csr")
+        XCTAssertEqual(certificate.id, "cert")
+        XCTAssertEqual(certificate.der, der)
+    }
+
     func testLegacyPEMCertificateDataIsNormalizedBeforeResourceResolution() async throws {
         let der = try certificateFixture()
         let pem = "-----BEGIN CERTIFICATE-----\r\n" + der.base64EncodedString(options: .lineLength64Characters) + "\r\n-----END CERTIFICATE-----\r\n"

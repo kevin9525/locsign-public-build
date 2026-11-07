@@ -4,6 +4,17 @@ import XCTest
 final class DeveloperServicesProvisionerTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
 
+    func testMissingIssuanceContentRecoversMatchingCertificateWithoutResubmittingCSR() async throws {
+        let fixture = try setup(cached: false)
+        await fixture.gateway.setMissingIssuanceContent()
+        let material = try await run(fixture)
+        XCTAssertEqual(material.profileData, try data("profile-valid", "mobileprovision"))
+        let saved = try await fixture.store.loadPending()
+        XCTAssertEqual(saved?.certificate?.id, "cert")
+        let mutations = await fixture.gateway.mutations
+        XCTAssertEqual(mutations, ["certificate"])
+    }
+
     func testRecoversIssuedCertificateAfterLostResponseUsingDurablePendingKey() async throws {
         let fixture = try setup(cached: true)
         let loaded = try await fixture.store.loadPending()
@@ -164,6 +175,8 @@ private actor ProvisioningGatewayFixture: DeveloperServicesGateway {
     var quota: Bool
     let capabilities: [String]
     var mutations: [String] = []
+    private var missingIssuanceContent = false
+    func setMissingIssuanceContent() { missingIssuanceContent = true; certs = [] }
     init(store: PendingStoreFixture, cert: DeveloperCertificate, profile: DeveloperProfile, now: Date, missingDevice: Bool, missingBundle: Bool, missingProfile: Bool, failProfile: Bool, quota: Bool, capabilities: [String]) {
         self.store = store; self.cert = cert; self.profile = profile; self.missingDevice = missingDevice; self.missingBundle = missingBundle
         self.missingProfile = missingProfile; self.failProfile = failProfile; self.quota = quota; self.capabilities = capabilities
@@ -180,6 +193,10 @@ private actor ProvisioningGatewayFixture: DeveloperServicesGateway {
     func createDevelopmentCertificate(csr: String) async throws -> DeveloperCertificate {
         guard let pending = await store.pending, pending.csr == csr, !pending.privateKeyPEM.isEmpty else { throw DeveloperServicesError.invalidResponse }
         mutations.append("certificate")
+        if missingIssuanceContent {
+            certs = [cert]
+            throw DeveloperServicesFailure(step: .createCertificate, reason: .certificateResponse(.missingContent))
+        }
         if quota && !certs.isEmpty { throw DeveloperServicesError.certificateQuota }
         return cert
     }
