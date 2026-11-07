@@ -40,6 +40,45 @@ final class ProvisioningIPAPreflightTests: XCTestCase {
         XCTAssertThrowsError(try ProvisioningIPAPreflight().inspect(archive(executable: data)))
     }
 
+    func testAcceptsSignedAppWithPaddingAfterTheDeclaredSuperBlob() throws {
+        let executable = Self.macho(entitlements: ["get-task-allow": true], signaturePadding: 512)
+        XCTAssertEqual(try ProvisioningIPAPreflight().inspect(archive(executable: executable)).bundleID, "com.test.app")
+    }
+
+    func testRejectsSignatureIndexesAndChildBlobsOutsideDeclaredLengthDespiteAllocationPadding() throws {
+        let original = Self.macho(entitlements: ["get-task-allow": true], signaturePadding: 4096)
+        let signature = 48 // 32-byte mach_header_64 + 16-byte LC_CODE_SIGNATURE.
+        let logicalLength = Int(original[(signature + 4)..<(signature + 8)].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) })
+        func settingWord(_ value: UInt32, at offset: Int, in data: Data) -> Data {
+            var result = data
+            var big = value.bigEndian
+            let bytes = withUnsafeBytes(of: &big) { Data($0) }
+            result.replaceSubrange(offset..<(offset + 4), with: bytes)
+            return result
+        }
+        for length in [8, logicalLength + 4097] {
+            let bad = settingWord(UInt32(length), at: signature + 4, in: original)
+            XCTAssertThrowsError(try ProvisioningIPAPreflight().inspect(archive(executable: bad)))
+        }
+        // The reserved bytes must not become a second source of entitlements.
+        let blob = original[(signature + 20)..<(signature + logicalLength)]
+        var outside = settingWord(UInt32(logicalLength), at: signature + 16, in: original)
+        outside.replaceSubrange((signature + logicalLength)..<(signature + logicalLength + blob.count), with: blob)
+        XCTAssertThrowsError(try ProvisioningIPAPreflight().inspect(archive(executable: outside)))
+
+        // An otherwise unparsed child type must also stay within the SuperBlob.
+        var overlongChild = settingWord(2, at: signature + 12, in: original)
+        overlongChild = settingWord(UInt32(logicalLength), at: signature + 24, in: overlongChild)
+        XCTAssertThrowsError(try ProvisioningIPAPreflight().inspect(archive(executable: overlongChild)))
+    }
+
+    func testPaddingDoesNotHideUnsupportedApplicationEntitlements() throws {
+        let executable = Self.macho(entitlements: ["aps-environment": "development"], signaturePadding: 512)
+        XCTAssertThrowsError(try ProvisioningIPAPreflight().inspect(archive(executable: executable))) { error in
+            XCTAssertEqual(error as? ProvisioningError, .unsupportedIPA("包含免费签名暂不支持的权限"))
+        }
+    }
+
     private func archive(executable: Data? = nil, extra: String? = nil, executableName: String = "Test") throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
@@ -59,7 +98,7 @@ final class ProvisioningIPAPreflightTests: XCTestCase {
         return ipa
     }
 
-    static func macho(entitlements: [String: Any]? = nil, encrypted: Bool = false) -> Data {
+    static func macho(entitlements: [String: Any]? = nil, encrypted: Bool = false, signaturePadding: Int = 0) -> Data {
         func word(_ value: UInt32, big: Bool = false) -> Data {
             var value = big ? value.bigEndian : value.littleEndian
             return withUnsafeBytes(of: &value) { Data($0) }
@@ -71,12 +110,12 @@ final class ProvisioningIPAPreflightTests: XCTestCase {
             signature = word(0xfade0cc0, big: true) + word(UInt32(blob.count + 20), big: true) + word(1, big: true) + word(5, big: true) + word(20, big: true) + blob
         }
         var commands = Data()
-        if !signature.isEmpty { commands += word(0x1d) + word(16) + word(UInt32(32 + 16 + (encrypted ? 24 : 0))) + word(UInt32(signature.count)) }
+        if !signature.isEmpty { commands += word(0x1d) + word(16) + word(UInt32(32 + 16 + (encrypted ? 24 : 0))) + word(UInt32(signature.count + signaturePadding)) }
         if encrypted { commands += word(0x2c) + word(24) + word(0) + word(0) + word(1) + word(0) }
         let count: UInt32 = (signature.isEmpty ? 0 : 1) + (encrypted ? 1 : 0)
         var header = Data()
         let headerWords: [UInt32] = [0xfeedfacf, 0x0100000c, 0, 2, count, UInt32(commands.count), 0, 0]
         for value in headerWords { header += word(value) }
-        return header + commands + signature
+        return header + commands + signature + (signature.isEmpty ? Data() : Data(repeating: 0, count: signaturePadding))
     }
 }
