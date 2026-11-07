@@ -5,6 +5,27 @@ import OpenAPIRuntime
 @testable import LocSign
 
 final class DeveloperServicesGatewayTests: XCTestCase {
+    func testLegacyPEMCertificateDataIsNormalizedBeforeResourceResolution() async throws {
+        let der = try certificateFixture()
+        let pem = "-----BEGIN CERTIFICATE-----\r\n" + der.base64EncodedString(options: .lineLength64Characters) + "\r\n-----END CERTIFICATE-----\r\n"
+        let transport = DeveloperAPIFixture()
+        await transport.setIssuedCertificate(Data(pem.utf8), listedSerial: "69", listedContent: der)
+        let certificate = try await gateway(transport).createDevelopmentCertificate(csr: "synthetic-csr")
+        XCTAssertEqual(certificate.id, "cert")
+        XCTAssertEqual(certificate.der, der)
+    }
+
+    func testLegacyPEMCertificateStringIsNormalizedBeforeResourceResolution() async throws {
+        let der = try certificateFixture()
+        let pem = "-----BEGIN CERTIFICATE-----\n" + der.base64EncodedString() + "\n-----END CERTIFICATE-----"
+        let transport = DeveloperAPIFixture()
+        await transport.setIssuedCertificate(der, listedSerial: "69", listedContent: nil)
+        try await transport.setLegacyPayload(["resultCode": 0, "certRequest": ["certContent": pem]])
+        let certificate = try await gateway(transport).createDevelopmentCertificate(csr: "synthetic-csr")
+        XCTAssertEqual(certificate.id, "cert")
+        XCTAssertEqual(certificate.der, der)
+    }
+
     func testIssuedCertificateResolvesMetadataOnlyListingBySerialAndRetainsIssuedBytes() async throws {
         let der = try Data(contentsOf: XCTUnwrap(Bundle(for: Self.self).url(forResource: "profile-dev", withExtension: "cer")))
         let transport = DeveloperAPIFixture()
@@ -303,6 +324,7 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
     private var listedSerial = "01"
     private var listedContent: Data? = Data([1])
     private var duplicateCertificate = false
+    private var legacyPayload: Data?
     private var certificateDate = "2035-01-01T00:00:00Z"
     private var malformedResponse = false
     private var transportFailure = false
@@ -315,6 +337,9 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
     func setCertificateDate(_ value: String) { certificateDate = value }
     func setLegacyResultCode(_ code: Int) { legacyResultCode = code }
     func setDuplicateCertificate() { duplicateCertificate = true }
+    func setLegacyPayload(_ payload: [String: Any]) throws {
+        legacyPayload = try PropertyListSerialization.data(fromPropertyList: payload, format: .xml, options: 0)
+    }
     func setIssuedCertificate(_ der: Data, listedSerial: String, listedContent: Data?) {
         issuedCertificate = der
         self.listedSerial = listedSerial
@@ -342,6 +367,7 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
         let path = request.path ?? ""
         requests.append(.init(host: baseURL.host, path: path, token: request.headerFields[.init("X-Apple-GS-Token")!], team: team, body: String(data: bytes, encoding: .utf8), override: method))
         if !conflict, path.contains("ios/submitDevelopmentCSR.action"), let code = legacyResultCode {
+            if let legacyPayload { return (.init(status: .ok), HTTPBody(legacyPayload)) }
             let payload: [String: Any] = ["resultCode": code, "resultString": "synthetic-sensitive-response", "certRequest": ["certContent": issuedCertificate]]
             return (.init(status: .ok), HTTPBody(try PropertyListSerialization.data(fromPropertyList: payload, format: .xml, options: 0)))
         }
