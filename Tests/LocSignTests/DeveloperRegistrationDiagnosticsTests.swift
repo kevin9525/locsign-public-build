@@ -2,6 +2,13 @@ import XCTest
 @testable import LocSign
 
 final class DeveloperRegistrationDiagnosticsTests: XCTestCase {
+    func testEchoedIdentifierWordsCannotImplyARegistrationQuota() throws {
+        let data = try JSONSerialization.data(withJSONObject: ["errors": [
+            ["detail": "An App ID with Identifier 'com.example.registerlimit' is not available. Please enter a different string."]
+        ]])
+        XCTAssertEqual(DeveloperRegistrationDiagnostics.rejection(status: 409, data: data), .registrationRejected(409, .identifierUnavailable))
+    }
+
     func testUnknownMalformedAndOversizedErrorsRemainUnclassified() throws {
         for data in [Data(), Data("not JSON".utf8), Data(repeating: 32, count: 65_537),
                      try JSONSerialization.data(withJSONObject: ["errors": [["code": "secret@example.com", "detail": "private server response"]]])] {

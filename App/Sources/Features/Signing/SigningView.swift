@@ -27,15 +27,18 @@ struct SigningView: View {
                             .textInputAutocapitalization(.never)
                     }
                 }
-                .disabled(model.isSigning || model.isImporting || model.isInstalling || model.isProvisioning)
+                .disabled(model.isSigning || model.isImporting || model.isInstalling || model.isProvisioning || model.isPreparingIdentifier)
                 Section {
                     Button("使用 Apple ID 获取材料并签名") { showingAppleID = true }
-                        .disabled(model.isSigning || model.isImporting || model.isInstalling || model.isProvisioning)
+                        .disabled(model.isSigning || model.isImporting || model.isInstalling || model.isProvisioning || model.isPreparingIdentifier)
                 } footer: {
                     Text("先导入 IPA 和这台手机的配对文件；进入账号页后填写本地 VPN 地址并验证设备。")
                 }
                 if model.isImporting {
                     Section { HStack { ProgressView(); Text("正在导入文件…") } }
+                }
+                if model.isPreparingIdentifier {
+                    Section { HStack { ProgressView(); Text("正在结束 IPA 检查…") } }
                 }
                 if let profile = model.profile {
                     Section("描述文件信息") {

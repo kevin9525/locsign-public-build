@@ -24,8 +24,9 @@ enum DeveloperRegistrationDiagnostics {
             let detail = (error["detail"] as? String ?? "").lowercased()
             guard detail.utf8.count <= 4096 else { continue }
             let isAppID = detail.contains("app id") || detail.contains("app ids") || detail.contains("bundle identifier")
-            if isAppID && (detail.contains("maximum") || detail.contains("limit")) &&
-                (detail.contains("register") || detail.contains("create")) {
+            // Never infer quotas from words inside an echoed bundle identifier.
+            if detail.range(of: #"^(?:you may register a maximum of [0-9]+ app ids\b|you have reached (?:the )?(?:maximum number|limit) of app ids\b)"#,
+                            options: .regularExpression) != nil {
                 reasons.append(.registrationLimit)
             } else if isAppID && (detail.contains("not available") || detail.contains("already in use") ||
                                    detail.contains("already exists")) {

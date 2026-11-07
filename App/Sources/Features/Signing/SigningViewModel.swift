@@ -48,6 +48,7 @@ final class SigningViewModel: ObservableObject {
     private var generation = UUID()
     private var provisioningEngine: (any ProvisioningEngine)?
     private var outputIsProvisioned = false
+    private var identifierTask: Task<String, Error>?
 
     init(installer: any IPAInstalling = InstallCoordinator(), deviceProbe: any PairedDeviceProbing = ProvisioningDeviceProbe(),
          materialSigner: (@MainActor (URL, ProvisioningMaterial) async throws -> URL)? = nil) {
@@ -66,12 +67,16 @@ final class SigningViewModel: ObservableObject {
               let ipaURL else { return }
         isPreparingIdentifier = true
         let operation = generation
-        defer { isPreparingIdentifier = false }
+        defer { isPreparingIdentifier = false; identifierTask = nil }
         do {
-            let identifier = try await Task.detached(priority: .userInitiated) {
+            let task = Task.detached(priority: .userInitiated) {
                 let original = try ProvisioningIPAPreflight().inspect(ipaURL)
                 return try ProvisioningSigningIdentifier.personal(original: original.bundleID, teamID: teamID)
-            }.value
+            }
+            identifierTask = task
+            let identifier = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: { task.cancel() }
             try check(operation)
             personalBundleID = identifier
             error = nil
@@ -150,6 +155,7 @@ final class SigningViewModel: ObservableObject {
     }
     func cancelProvisioning() async {
         generation = UUID()
+        identifierTask?.cancel()
         let engine = provisioningEngine
         // Keep input locks until any in-flight signer has drained.
         await engine?.cancel()
@@ -170,7 +176,7 @@ final class SigningViewModel: ObservableObject {
     }
 
     var canSign: Bool {
-        ipaURL != nil && identityData != nil && profile != nil && !isSigning && !isImporting && !isInstalling && !isProvisioning
+        ipaURL != nil && identityData != nil && profile != nil && !isSigning && !isImporting && !isInstalling && !isProvisioning && !isPreparingIdentifier
     }
 
     func importFile(_ url: URL, as input: SigningInput) async {
@@ -290,6 +296,7 @@ final class SigningViewModel: ObservableObject {
     }
 
     deinit {
+        identifierTask?.cancel()
         if let ipaURL { try? FileManager.default.removeItem(at: ipaURL) }
     }
 }
