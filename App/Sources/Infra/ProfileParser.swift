@@ -21,7 +21,7 @@ struct ProvisioningProfileData {
         }
         return bundleID == bundleIdentifier
     }
-    func signingEntitlements(for identifier: String) throws -> Data {
+    func signingEntitlements(for identifier: String, restrictKeychainToApplication: Bool = false) throws -> Data {
         guard permits(bundleIdentifier: identifier),
               var entitlements = payload["Entitlements"] as? [String: Any],
               let applicationID = entitlements["application-identifier"] as? String,
@@ -31,8 +31,17 @@ struct ProvisioningProfileData {
         let concreteID = "\(prefix).\(identifier)"
         entitlements["application-identifier"] = concreteID
         if let groups = entitlements["keychain-access-groups"] as? [String] {
-            entitlements["keychain-access-groups"] = groups.map { group in
-                group == "\(prefix).*" ? concreteID : group
+            if restrictKeychainToApplication {
+                guard groups.contains(concreteID) || groups.contains("\(prefix).*") else {
+                    throw LocSignError.signing("描述文件未授权当前应用的钥匙串组")
+                }
+                // Profile entries authorize claims; they are not a list of
+                // claims the App needs. Never claim Apple/shared groups here.
+                entitlements["keychain-access-groups"] = [concreteID]
+            } else {
+                entitlements["keychain-access-groups"] = groups.map { group in
+                    group == "\(prefix).*" ? concreteID : group
+                }
             }
         }
         return try PlistCodec.encodeXML(entitlements)

@@ -16,6 +16,7 @@ final class AppleIDProvisioningModel: ObservableObject {
     @Published private(set) var awaitingCode = false
     @Published private(set) var revocations: [CertificateRevocation] = []
     @Published private(set) var error: String?
+    @Published private(set) var requiresLogin = true
     private let factory: EngineFactory
     private var currentEngine: (any ProvisioningEngine)?
     private var configuration: AnisetteProviderConfiguration?
@@ -28,8 +29,10 @@ final class AppleIDProvisioningModel: ObservableObject {
     }
     var engine: (any ProvisioningEngine)? { currentEngine }
 
-    private func configuredEngine() throws -> any ProvisioningEngine {
-        guard providerEnabled, providerAccepted else { throw ProvisioningError.providerUnavailable("请启用并确认所选提供方") }
+    private func configuredEngine(forAuthentication: Bool = true) throws -> any ProvisioningEngine {
+        if forAuthentication {
+            guard providerEnabled, providerAccepted else { throw ProvisioningError.providerUnavailable("请启用并确认所选提供方") }
+        }
         guard let url = URL(string: endpoint.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             throw ProvisioningError.providerUnavailable("请输入有效的 HTTPS 提供方地址")
         }
@@ -42,15 +45,21 @@ final class AppleIDProvisioningModel: ObservableObject {
     }
 
     func restore() async {
-        guard !isBusy, account == nil, providerEnabled, providerAccepted else { return }
+        guard !isBusy, account == nil || requiresLogin else { return }
         let operation = generation
         isBusy = true
         defer { if generation == operation { isBusy = false } }
         do {
-            let engine = try configuredEngine()
-            let restored = try await engine.restoreAccount()
+            let engine = try configuredEngine(forAuthentication: false)
+            let authenticated: ProvisioningAccount?
+            if providerEnabled && providerAccepted { authenticated = try await engine.restoreAccount() }
+            else { authenticated = nil }
+            let restored: ProvisioningAccount?
+            if let authenticated { restored = authenticated }
+            else { restored = try await engine.restoreSigningAccount() }
             try check(operation)
             setAccount(restored)
+            requiresLogin = authenticated == nil
         } catch { if generation == operation { self.error = message(error) } }
     }
 
@@ -71,11 +80,13 @@ final class AppleIDProvisioningModel: ObservableObject {
             try check(operation)
             guard !result.teams.isEmpty else { throw AppleAccountError.noDeveloperTeam }
             setAccount(result)
+            requiresLogin = false
         } catch { if generation == operation { self.error = message(error) } }
     }
 
     private func setAccount(_ value: ProvisioningAccount?) {
         account = value
+        if value == nil { requiresLogin = true }
         teamID = value?.teams.count == 1 ? (value?.teams.first?.id ?? "") : ""
         if let value { appleID = value.appleID }
     }
@@ -153,11 +164,18 @@ final class AppleIDProvisioningModel: ObservableObject {
         await previous?.cancel()
         // Restore only inspects local Keychain state. It removes a session/ADI
         // from another provider and preserves the stable signing-key namespace.
-        if providerEnabled, let url = URL(string: endpoint), let config = try? AnisetteProviderConfiguration(endpoint: url) {
+        let operation = generation
+        if let url = URL(string: endpoint), let config = try? AnisetteProviderConfiguration(endpoint: url) {
             do {
                 let replacement = try factory(config)
                 _ = try await replacement.restoreAccount()
+                try check(operation)
                 await replacement.cancel()
+                try check(operation)
+                // Account metadata is restored separately by the UI so replacing
+                // a provider always clears the previous authenticated selection.
+                configuration = config
+                currentEngine = replacement
             } catch { self.error = message(error) }
         }
     }

@@ -40,6 +40,7 @@ final class SigningViewModel: ObservableObject {
     private let materialSigner: @MainActor (URL, ProvisioningMaterial) async throws -> URL
     private var generation = UUID()
     private var provisioningEngine: (any ProvisioningEngine)?
+    private var outputIsProvisioned = false
 
     init(installer: any IPAInstalling = InstallCoordinator(), deviceProbe: any PairedDeviceProbing = ProvisioningDeviceProbe(),
          materialSigner: (@MainActor (URL, ProvisioningMaterial) async throws -> URL)? = nil) {
@@ -50,7 +51,8 @@ final class SigningViewModel: ObservableObject {
 
     static func signProvisionedMaterial(_ ipa: URL, _ material: ProvisioningMaterial) async throws -> URL {
         let profile = try ProfileParser.parse(material.profileData)
-        return try await SigningEngine.shared.sign(ipaURL: ipa, identity: .pem(material.privateKeyPEM), profile: profile)
+        return try await SigningEngine.shared.sign(ipaURL: ipa, identity: .pem(material.privateKeyPEM), profile: profile,
+            restrictKeychainToApplication: true)
     }
     func verifyProvisioningDevice() async {
         guard !isSigning, !isImporting, !isInstalling, !isProvisioning else { return }
@@ -77,7 +79,7 @@ final class SigningViewModel: ObservableObject {
                           useCachedMaterial: Bool = false,
                           confirmRevocation: @escaping @Sendable ([CertificateRevocation]) async -> Bool = { _ in false }) async {
         guard !isSigning, !isImporting, !isInstalling, !isProvisioning else { return }
-        guard providerAccepted else { error = "请先确认 Anisette 提供方及数据用途"; return }
+        guard useCachedMaterial || providerAccepted else { error = "请先确认 Anisette 提供方及数据用途"; return }
         guard !teamID.isEmpty, account.teams.contains(where: { $0.id == teamID }) else { error = "请选择可用的免费 iOS 团队"; return }
         guard let ipaURL, let pairingData, let verifiedDeviceUDID else { error = "请导入 IPA、配对文件并检测已配对设备"; return }
         let host = deviceHost.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -98,14 +100,23 @@ final class SigningViewModel: ObservableObject {
                 self.verifiedDeviceUDID = nil
                 throw ProvisioningError.materialInvalid("配对设备已变化，请重新检测")
             }
-            let material = try await engine.provision(request: .init(accountID: account.id, teamID: teamID, ipaURL: ipaURL,
-                deviceUDID: currentDevice), confirmRevocation: confirmRevocation)
+            let request = ProvisioningRequest(accountID: account.id, teamID: teamID, ipaURL: ipaURL, deviceUDID: currentDevice)
+            let material: ProvisioningMaterial
+            if useCachedMaterial {
+                guard let cached = try await engine.cachedMaterial(request: request) else {
+                    throw ProvisioningError.materialInvalid("本机没有此团队的材料，请启用提供方并登录获取，或手动导入")
+                }
+                material = cached
+            } else {
+                material = try await engine.provision(request: request, confirmRevocation: confirmRevocation)
+            }
             try check(operation)
             let output = try await materialSigner(ipaURL, material)
             do { try check(operation) }
             catch { try? FileManager.default.removeItem(at: output); throw error }
             guard FileManager.default.fileExists(atPath: output.path) else { throw LocSignError.signing("签名未生成文件") }
             outputURL = output
+            outputIsProvisioned = true
             profileExpiry = material.profileExpiry
             certificateExpiry = material.certificateExpiry
         } catch {
@@ -118,7 +129,11 @@ final class SigningViewModel: ObservableObject {
         // Keep input locks until any in-flight signer has drained.
         await engine?.cancel()
     }
-    func clearProvisioningOutput() {}
+    func clearProvisioningOutput() {
+        // Also invalidate a signer that may still be draining after cancellation.
+        generation = UUID()
+        if outputIsProvisioned { discardOutput() }
+    }
 
     private func check(_ operation: UUID) throws {
         try Task.checkCancellation()
@@ -240,6 +255,7 @@ final class SigningViewModel: ObservableObject {
         guard !isInstalling else { return }
         if let outputURL { try? FileManager.default.removeItem(at: outputURL) }
         outputURL = nil
+        outputIsProvisioned = false
         profileExpiry = nil
         certificateExpiry = nil
         installProgress = 0

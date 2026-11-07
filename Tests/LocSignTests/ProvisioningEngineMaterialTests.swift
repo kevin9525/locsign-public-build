@@ -17,6 +17,11 @@ final class ProvisioningEngineMaterialTests: XCTestCase {
         XCTAssertEqual(restored?.id, account.id)
         let cached = try await offline.cachedMaterial(request: request)
         XCTAssertEqual(cached?.profileData, try data("profile-valid", "mobileprovision"))
+        // A pending retry can carry a different key; it must not shadow active.
+        try fixture.keychain.write(JSONEncoder().encode(PendingSigningMaterial(privateKeyPEM: Data("different-pending-key".utf8), csr: "retry", certificate: nil)),
+            account: account.appleID, provider: "signing-material-v1", team: request.teamID, key: "pending")
+        let withPendingRetry = try await offline.cachedMaterial(request: request)
+        XCTAssertEqual(withPendingRetry?.profileData, cached?.profileData)
         let foreignDevice = ProvisioningRequest(accountID: account.id, teamID: request.teamID, ipaURL: fixture.ipa, deviceUDID: "DIFFERENT-UDID")
         do { _ = try await offline.cachedMaterial(request: foreignDevice); XCTFail("Foreign device accepted") } catch {}
         let otherIPA = try makeIPA(bundle: "com.other.app")
@@ -31,6 +36,9 @@ final class ProvisioningEngineMaterialTests: XCTestCase {
         row["material"] = material
         try fixture.keychain.write(JSONSerialization.data(withJSONObject: row), account: account.appleID, provider: "signing-material-v1", team: request.teamID, key: "active")
         do { _ = try await offline.cachedMaterial(request: request); XCTFail("Expired signed profile accepted") } catch {}
+        try await offline.logout(account: account.appleID)
+        let afterLogout = try await offline.restoreSigningAccount()
+        XCTAssertNil(afterLogout)
     }
 
     private func makeIPA(bundle: String) throws -> URL {

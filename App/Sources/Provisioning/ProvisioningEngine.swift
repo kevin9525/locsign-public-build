@@ -95,6 +95,49 @@ actor ProvisioningEngineLive: ProvisioningEngine {
         return saved.account
     }
 
+    func restoreSigningAccount() async throws -> ProvisioningAccount? {
+        try Task.checkCancellation()
+        return try savedSigningAccount()
+    }
+
+    private func savedSigningAccount() throws -> ProvisioningAccount? {
+        guard let data = try keychain.read(account: "", provider: Self.materialNamespace, team: "", key: "account") else { return nil }
+        let account = try JSONDecoder().decode(ProvisioningAccount.self, from: data)
+        guard !account.appleID.isEmpty, !account.teams.isEmpty else { throw ProvisioningError.invalidAccount }
+        return account
+    }
+
+    func cachedMaterial(request: ProvisioningRequest) async throws -> ProvisioningMaterial? {
+        let operation = begin()
+        let saved = try savedSigningAccount()
+        let account = session?.account.id == request.accountID ? session?.account : saved
+        guard let account, account.id == request.accountID,
+              account.teams.contains(where: { $0.id == request.teamID }), !request.deviceUDID.isEmpty else {
+            throw ProvisioningError.invalidAccount
+        }
+        try check(operation)
+        guard let data = try keychain.read(account: account.appleID, provider: Self.materialNamespace,
+                                          team: request.teamID, key: "active") else { return nil }
+        let active = try JSONDecoder().decode(ActiveSigningMaterial.self, from: data)
+        let app = try ProvisioningIPAPreflight().inspect(request.ipaURL)
+        guard active.bundleID == app.bundleID, active.deviceUDID == request.deviceUDID,
+              active.material.certificateExpiry > Date() else { throw ProfileValidationError.metadata }
+        let validator = try profileValidator()
+        // Active identities carry their own certificate and key. A later failed
+        // CSR/profile attempt may have replaced pending with another identity.
+        let verified = try validator.validate(data: active.material.profileData,
+            expectedBundleID: app.bundleID, expectedTeamID: request.teamID, expectedUDID: request.deviceUDID,
+            expectedCertificateDER: active.certificateDER, privateKeyPEM: Data(active.material.privateKeyPEM.utf8))
+        try check(operation)
+        return ProvisioningMaterial(privateKeyPEM: active.material.privateKeyPEM, profileData: verified.raw,
+            certificateExpiry: min(active.material.certificateExpiry, verified.certificateExpiry), profileExpiry: verified.expiry)
+    }
+
+    private func profileValidator() throws -> ProvisioningProfileValidator {
+        if let trustAnchors { return ProvisioningProfileValidator(trustAnchors: trustAnchors) }
+        return try .apple()
+    }
+
     func provision(request: ProvisioningRequest, confirmRevocation: @escaping @Sendable ([CertificateRevocation]) async -> Bool) async throws -> ProvisioningMaterial {
         guard let session, session.account.id == request.accountID,
               session.account.teams.contains(where: { $0.id == request.teamID }),
@@ -116,9 +159,7 @@ actor ProvisioningEngineLive: ProvisioningEngine {
             guard let pending = try loadPending(operation: operation, account: session.account.appleID, team: request.teamID),
                   let certificate = pending.certificate, let der = certificate.der,
                   Data(material.privateKeyPEM.utf8) == pending.privateKeyPEM else { throw ProfileValidationError.certificate }
-            let validator: ProvisioningProfileValidator
-            if let trustAnchors { validator = ProvisioningProfileValidator(trustAnchors: trustAnchors) }
-            else { validator = try .apple() }
+            let validator = try profileValidator()
             let app = try ProvisioningIPAPreflight().inspect(request.ipaURL)
             // Independently enforce the backend's authenticated-material contract
             // before replacing active material; no plist dictionary is actor state.
@@ -126,12 +167,33 @@ actor ProvisioningEngineLive: ProvisioningEngine {
                 expectedBundleID: app.bundleID,
                 expectedTeamID: request.teamID, expectedUDID: request.deviceUDID,
                 expectedCertificateDER: der, privateKeyPEM: pending.privateKeyPEM)
-            let active = ActiveSigningMaterial(certificateID: certificate.id, bundleID: verified.profile.bundleID,
-                                              deviceUDID: request.deviceUDID, material: material)
+            let checkedMaterial = ProvisioningMaterial(privateKeyPEM: material.privateKeyPEM, profileData: verified.raw,
+                certificateExpiry: min(certificate.expiry, verified.certificateExpiry), profileExpiry: verified.expiry)
+            let active = ActiveSigningMaterial(certificateID: certificate.id, certificateDER: der, bundleID: verified.profile.bundleID,
+                                              deviceUDID: request.deviceUDID, material: checkedMaterial)
             try check(operation)
+            let previous = try keychain.read(account: session.account.appleID, provider: Self.materialNamespace,
+                                             team: request.teamID, key: "active")
             try keychain.write(JSONEncoder().encode(active), account: session.account.appleID,
                                provider: Self.materialNamespace, team: request.teamID, key: "active")
-            return material
+            // This locator contains no authentication token and survives provider
+            // changes/session expiry. Secrets remain in the scoped active item.
+            do {
+                try keychain.write(JSONEncoder().encode(session.account), account: "", provider: Self.materialNamespace,
+                                   team: "", key: "account")
+            } catch {
+                // A failed locator commit must not replace the last usable active
+                // identity. No suspension occurs between either write/rollback.
+                if let previous {
+                    try keychain.write(previous, account: session.account.appleID, provider: Self.materialNamespace,
+                                       team: request.teamID, key: "active")
+                } else {
+                    try keychain.remove(account: session.account.appleID, provider: Self.materialNamespace,
+                                        team: request.teamID, key: "active")
+                }
+                throw error
+            }
+            return checkedMaterial
         } catch {
             if generation == operation {
                 context.invalidate()
@@ -152,6 +214,9 @@ actor ProvisioningEngineLive: ProvisioningEngine {
             try keychain.remove(account: "", provider: "engine", team: "", key: "session")
         }
         try keychain.removeAll(account: normalized)
+        if let saved = try savedSigningAccount(), saved.appleID == normalized {
+            try keychain.remove(account: "", provider: Self.materialNamespace, team: "", key: "account")
+        }
     }
 
     private func begin() -> UUID {
@@ -190,6 +255,7 @@ actor ProvisioningEngineLive: ProvisioningEngine {
 
 private struct ActiveSigningMaterial: Codable {
     let certificateID: String
+    let certificateDER: Data
     let bundleID: String
     let deviceUDID: String
     let material: ProvisioningMaterial

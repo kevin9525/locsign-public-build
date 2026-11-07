@@ -101,7 +101,10 @@ struct ProvisioningProfileValidator {
               entitlements["get-task-allow"] as? Bool == true else { return false }
         if let value = entitlements["com.apple.developer.team-identifier"], value as? String != team { return false }
         if let value = entitlements["keychain-access-groups"] {
-            guard let groups = value as? [String], groups.allSatisfy({ $0 == appID }) else { return false }
+            guard let prefix = appID.split(separator: ".").first,
+                  let groups = value as? [String], !groups.isEmpty,
+                  groups.contains(where: { $0 == appID || $0 == "\(prefix).*" }),
+                  groups.allSatisfy({ $0 == appID || $0 == "\(prefix).*" || $0 == "com.apple.token" }) else { return false }
         }
         return true
     }

@@ -17,11 +17,13 @@ final class SigningEngine {
         try await sign(ipaURL: ipaURL, identity: .pem(keyPEM), profile: profile)
     }
 
-    func sign(ipaURL: URL, identity: SigningIdentity, profile: ProvisioningProfileData) async throws -> URL {
+    func sign(ipaURL: URL, identity: SigningIdentity, profile: ProvisioningProfileData,
+              restrictKeychainToApplication: Bool = false) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
             queue.async {
                 do {
-                    continuation.resume(returning: try self.signIPA(ipaURL, identity: identity, profile: profile))
+                    continuation.resume(returning: try self.signIPA(ipaURL, identity: identity, profile: profile,
+                        restrictKeychainToApplication: restrictKeychainToApplication))
                 } catch {
                     continuation.resume(throwing: error)
                 }
@@ -30,7 +32,7 @@ final class SigningEngine {
     }
 
     private func signIPA(_ ipaURL: URL, identity: SigningIdentity,
-                         profile: ProvisioningProfileData) throws -> URL {
+                         profile: ProvisioningProfileData, restrictKeychainToApplication: Bool) throws -> URL {
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tmp) }
@@ -56,7 +58,7 @@ final class SigningEngine {
         let output = exports.appendingPathComponent("\(UUID().uuidString).ipa")
         do {
             return try signAppBundle(app: app, workDir: tmp, identity: identity, profile: profile,
-                                     bundleID: bundleID, outputURL: output)
+                                     bundleID: bundleID, outputURL: output, restrictKeychainToApplication: restrictKeychainToApplication)
         } catch {
             try? FileManager.default.removeItem(at: output)
             throw error
@@ -65,14 +67,15 @@ final class SigningEngine {
 
     @discardableResult
     private func signAppBundle(app: URL, workDir: URL, identity: SigningIdentity,
-                               profile: ProvisioningProfileData, bundleID: String, outputURL: URL) throws -> URL {
+                               profile: ProvisioningProfileData, bundleID: String, outputURL: URL,
+                               restrictKeychainToApplication: Bool) throws -> URL {
         let profileFile = workDir.appendingPathComponent("embedded.mobileprovision")
         try profile.raw.write(to: profileFile)
         // The profile passed to zsign is also the profile that must ship inside the app bundle.
         // Without this replacement, zsign can produce a signed Mach-O with no embedded profile.
         try profile.raw.write(to: app.appendingPathComponent("embedded.mobileprovision"), options: [.atomic])
         let entsFile = workDir.appendingPathComponent("entitlements.plist")
-        try profile.signingEntitlements(for: bundleID).write(to: entsFile)
+        try profile.signingEntitlements(for: bundleID, restrictKeychainToApplication: restrictKeychainToApplication).write(to: entsFile)
         let keyFile = workDir.appendingPathComponent("identity")
         let password: String
         switch identity {

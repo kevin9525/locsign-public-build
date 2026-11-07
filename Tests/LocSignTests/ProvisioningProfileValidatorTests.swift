@@ -6,7 +6,7 @@ final class ProvisioningProfileValidatorTests: XCTestCase {
 
     func testAppleKeychainAuthorizationWildcardIsNarrowedToOnlyTheApplicationClaim() throws {
         let validated = try validate(name: "profile-keychain-allowlist")
-        let claims = try XCTUnwrap(PlistCodec.decode(validated.profile.signingEntitlements(for: "com.test.app")) as? [String: Any])
+        let claims = try XCTUnwrap(PlistCodec.decode(validated.profile.signingEntitlements(for: "com.test.app", restrictKeychainToApplication: true)) as? [String: Any])
         XCTAssertEqual(claims["keychain-access-groups"] as? [String], ["PREFIX1234.com.test.app"])
         assertRejects(.metadata) { try self.validate(name: "profile-foreign-keychain") }
     }

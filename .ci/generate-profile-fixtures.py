@@ -57,6 +57,8 @@ write('expired-certificate',dict(base,DeveloperCertificates=[expired_dev.public_
 write('wrong-prefix',dict(base,ApplicationIdentifierPrefix=['WRONGPREFIX']))
 write('wildcard',dict(base,Entitlements=dict(base['Entitlements'],**{'application-identifier':'PREFIX1234.com.test.*'})))
 write('unsupported-entitlement',dict(base,Entitlements=dict(base['Entitlements'],**{'aps-environment':'development'})))
+write('keychain-allowlist',dict(base,Entitlements=dict(base['Entitlements'],**{'keychain-access-groups':['PREFIX1234.*','com.apple.token']})))
+write('foreign-keychain',dict(base,Entitlements=dict(base['Entitlements'],**{'keychain-access-groups':['OTHERPREFIX.*']})))
 raw=(root/'profile-valid.mobileprovision').read_bytes()
 assert raw.count(b'SYNTHETIC-UDID')==1
 (root/'profile-tampered.mobileprovision').write_bytes(raw.replace(b'SYNTHETIC-UDID',b'UNTRUSTED-UDI'))

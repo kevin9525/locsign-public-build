@@ -106,7 +106,7 @@ struct XKitDeveloperServicesGateway: DeveloperServicesGateway {
                 // Construct only authentication and safe status middleware. The
                 // upstream convenience initializer also logs request bodies.
                 let api = DeveloperAPIClient(serverURL: try Servers.Server1.url(),
-                    configuration: .init(), transport: client.asOpenAPITransport,
+                    configuration: .init(dateTranscoder: AppleDeveloperDateTranscoder()), transport: client.asOpenAPITransport,
                     middlewares: [DeveloperAPIXcodeAuthMiddleware(authData: auth), DeveloperStatusMiddleware()])
                 let value = try await action(api)
                 try Task.checkCancellation()
@@ -158,6 +158,18 @@ struct XKitDeveloperServicesGateway: DeveloperServicesGateway {
         guard !value.id.isEmpty, let content = value.attributes?.profileContent,
               let data = Data(base64Encoded: content), !data.isEmpty else { throw DeveloperServicesError.invalidResponse }
         return DeveloperProfile(id: value.id, content: data)
+    }
+}
+
+// Apple responses contain both whole seconds and fractional seconds. Keep the
+// runtime's synchronized formatters rather than sharing an unprotected formatter.
+private struct AppleDeveloperDateTranscoder: DateTranscoder {
+    private let fractional: ISO8601DateTranscoder = .iso8601WithFractionalSeconds
+    private let whole: ISO8601DateTranscoder = .iso8601
+    func encode(_ value: Date) throws -> String { try fractional.encode(value) }
+    func decode(_ value: String) throws -> Date {
+        if let date = try? fractional.decode(value) { return date }
+        return try whole.decode(value)
     }
 }
 

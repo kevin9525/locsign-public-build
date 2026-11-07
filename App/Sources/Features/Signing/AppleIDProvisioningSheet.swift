@@ -19,7 +19,7 @@ struct AppleIDProvisioningSheet: View {
                         .font(.footnote).foregroundStyle(.secondary)
                     Toggle("我同意使用此地址的服务", isOn: $account.providerAccepted)
                         .disabled(!account.providerEnabled)
-                    Text("可以替换提供方或关闭自动申请；手动 P12 / PEM 导入仍可使用。")
+                    Text("可以替换提供方或关闭自动申请；本机有效材料及手动 P12 / PEM 导入仍可使用。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 .disabled(busy)
@@ -33,9 +33,9 @@ struct AppleIDProvisioningSheet: View {
                             }
                         }.disabled(busy)
                         Button("退出并清除本机账号资料", role: .destructive) {
-                            start { await account.logout() }
+                            start { signing.clearProvisioningOutput(); await account.logout() }
                         }.disabled(busy)
-                        Text("此操作会清除本应用保存的该账号会话、ADI 和签名材料。iOS 卸载应用不保证清除 Keychain。")
+                        Text("此操作会清除本应用保存的该账号会话、ADI、签名材料及当前签名产物；已导出的副本需自行管理。重新申请可能需要撤销旧证书。iOS 卸载应用不保证清除 Keychain。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     Section("设备与签名") {
@@ -59,7 +59,18 @@ struct AppleIDProvisioningSheet: View {
                             }
                         }
                         .disabled(busy || account.teamID.isEmpty || signing.verifiedDeviceUDID == nil ||
-                                  signing.ipaName == "未选择" || !account.providerAccepted || !account.providerEnabled)
+                                  signing.ipaName == "未选择" || !account.providerAccepted || !account.providerEnabled || account.requiresLogin)
+                        Button("使用本机有效材料签名") {
+                            guard let engine = account.engine else { return }
+                            let team = account.teamID
+                            start {
+                                await signing.provisionAndSign(using: engine, account: identity, teamID: team,
+                                    providerAccepted: false, useCachedMaterial: true)
+                            }
+                        }
+                        .disabled(busy || account.teamID.isEmpty || signing.verifiedDeviceUDID == nil || signing.ipaName == "未选择")
+                        Text("复用时不访问提供方或 Apple，仍会核对配对设备、应用及材料有效期。材料过期后请重新登录申请。")
+                            .font(.footnote).foregroundStyle(.secondary)
                         Text("仅支持无扩展、未加密的单一 arm64 App，并保留原 Bundle ID。免费描述文件通常约 7 天，实际到期日以 Apple 返回并验证的材料为准。")
                             .font(.footnote).foregroundStyle(.secondary)
                         if signing.outputURL != nil {
@@ -67,7 +78,8 @@ struct AppleIDProvisioningSheet: View {
                                 .foregroundStyle(.green)
                         }
                     }
-                } else {
+                }
+                if account.account == nil || account.requiresLogin {
                     Section("登录 Apple ID") {
                         TextField("Apple ID", text: $account.appleID)
                             .textInputAutocapitalization(.never).autocorrectionDisabled().keyboardType(.emailAddress)
@@ -76,7 +88,7 @@ struct AppleIDProvisioningSheet: View {
                         Button("登录") { start { await account.logIn() } }
                             .disabled(busy || !account.providerEnabled || !account.providerAccepted ||
                                       account.appleID.isEmpty || account.password.isEmpty)
-                        Text("密码仅用于本次 Apple 登录，提交、取消或离开页面时清空。会话和签名私钥保存在此设备的专用 Keychain。")
+                        Text(account.requiresLogin && account.account != nil ? "本机材料仍可使用；申请新材料需要重新登录。密码仅用于本次登录。" : "密码仅用于本次 Apple 登录，提交、取消或离开页面时清空。会话和签名私钥保存在此设备的专用 Keychain。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
@@ -128,8 +140,8 @@ struct AppleIDProvisioningSheet: View {
             }
             .interactiveDismissDisabled(busy)
             .task { await account.restore() }
-            .onChange(of: account.endpoint) { _, _ in Task { await account.changeProvider() } }
-            .onChange(of: account.providerEnabled) { _, _ in Task { await account.changeProvider() } }
+            .onChange(of: account.endpoint) { _, _ in Task { await account.changeProvider(); await account.restore() } }
+            .onChange(of: account.providerEnabled) { _, _ in Task { await account.changeProvider(); await account.restore() } }
             .onChange(of: account.providerAccepted) { _, accepted in if accepted { Task { await account.restore() } } }
             .onDisappear {
                 operation?.cancel()
