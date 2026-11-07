@@ -5,6 +5,30 @@ import OpenAPIRuntime
 @testable import LocSign
 
 final class DeveloperServicesGatewayTests: XCTestCase {
+    func testIssuedCertificateResolvesMetadataOnlyListingBySerialAndRetainsIssuedBytes() async throws {
+        let der = try Data(contentsOf: XCTUnwrap(Bundle(for: Self.self).url(forResource: "profile-dev", withExtension: "cer")))
+        let transport = DeveloperAPIFixture()
+        // The checked-in X.509 fixture has serial 0x69. REST need not repeat its DER.
+        await transport.setIssuedCertificate(der, listedSerial: "000069", listedContent: nil)
+        let certificate = try await gateway(transport).createDevelopmentCertificate(csr: "synthetic-csr")
+        XCTAssertEqual(certificate.id, "cert")
+        XCTAssertEqual(certificate.serial, "000069")
+        XCTAssertEqual(certificate.der, der)
+        let requests = await transport.requests
+        XCTAssertEqual(requests.filter { $0.path.contains("submitDevelopmentCSR") }.count, 1)
+        XCTAssertFalse(requests.contains { $0.override == "DELETE" })
+    }
+
+    func testLegacyMalformedCertificateResponseHasSpecificSafeDiagnosis() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setMalformedResponse()
+        do { _ = try await gateway(transport).createDevelopmentCertificate(csr: "synthetic-csr"); XCTFail("Malformed certificate accepted") }
+        catch {
+            XCTAssertTrue(error.localizedDescription.contains("证书签发响应"), error.localizedDescription)
+            XCTAssertFalse(error.localizedDescription.contains("synthetic-sensitive-response"))
+        }
+    }
+
     func testRegistrationConflictDistinguishesUnavailableIdentifierFromRegistrationLimit() async throws {
         for (detail, expected) in [
             ("An App ID with Identifier 'synthetic-sensitive-response' is not available. Please enter a different string.", "应用标识不可用"),
@@ -227,6 +251,9 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
     private var conflict = false
     private var conflictDetail = "synthetic-sensitive-response"
     private var legacyResultCode: Int? = 0
+    private var issuedCertificate = Data([1])
+    private var listedSerial = "01"
+    private var listedContent: Data? = Data([1])
     private var certificateDate = "2035-01-01T00:00:00Z"
     private var malformedResponse = false
     private var transportFailure = false
@@ -238,6 +265,11 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
     func setConflictDetail(_ value: String) { conflict = true; conflictDetail = value }
     func setCertificateDate(_ value: String) { certificateDate = value }
     func setLegacyResultCode(_ code: Int) { legacyResultCode = code }
+    func setIssuedCertificate(_ der: Data, listedSerial: String, listedContent: Data?) {
+        issuedCertificate = der
+        self.listedSerial = listedSerial
+        self.listedContent = listedContent
+    }
     nonisolated var asOpenAPITransport: any ClientTransport { self }
     func makeWebSocket(url: URL) async throws -> any WebSocketSession { throw DeveloperServicesError.invalidResponse }
     func withEphemeralClient<T>(perform: (any HTTPClientProtocol) async throws -> T) async throws -> T { try await perform(self) }
@@ -260,7 +292,7 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
         let path = request.path ?? ""
         requests.append(.init(host: baseURL.host, path: path, token: request.headerFields[.init("X-Apple-GS-Token")!], team: team, body: String(data: bytes, encoding: .utf8), override: method))
         if !conflict, path.contains("ios/submitDevelopmentCSR.action"), let code = legacyResultCode {
-            let payload: [String: Any] = ["resultCode": code, "resultString": "synthetic-sensitive-response", "certRequest": ["certContent": Data([1])]]
+            let payload: [String: Any] = ["resultCode": code, "resultString": "synthetic-sensitive-response", "certRequest": ["certContent": issuedCertificate]]
             return (.init(status: .ok), HTTPBody(try PropertyListSerialization.data(fromPropertyList: payload, format: .xml, options: 0)))
         }
         if conflict {
@@ -291,7 +323,9 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
             payload = ["data": ["id": "cert", "type": "certificates", "attributes": ["serialNumber": "01", "name": "Synthetic", "expirationDate": certificateDate, "certificateContent": "AQ==", "certificateType": "DEVELOPMENT"]]]
             status = .created
         } else if path == "/v1/certificates" {
-            payload = ["data": [["id": "cert", "type": "certificates", "attributes": ["serialNumber": "01", "name": "Synthetic", "expirationDate": certificateDate, "certificateContent": "AQ==", "certificateType": "DEVELOPMENT"]]]]
+            var certificateAttributes: [String: Any] = ["serialNumber": listedSerial, "name": "Synthetic", "expirationDate": certificateDate, "certificateType": "DEVELOPMENT"]
+            if let listedContent { certificateAttributes["certificateContent"] = listedContent.base64EncodedString() }
+            payload = ["data": [["id": "cert", "type": "certificates", "attributes": certificateAttributes]]]
             status = .ok
         } else if path == "/v1/profiles", method == "POST" {
             payload = ["data": ["id": "profile", "type": "profiles", "attributes": ["profileContent": "Ag=="]]]
