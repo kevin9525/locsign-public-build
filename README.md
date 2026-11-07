@@ -2,9 +2,9 @@
 
 iOS 18 签名与定位工具的开发中项目，参考 NB 助手的核心使用流程。
 
-当前版本 **0.2.0 / build 6** 接入免费 Apple ID 自动签名：提供方披露与同意、登录与六位验证码、免费 iOS 团队选择、证书及描述文件申请/复用、配对 TLS 设备核对、本机有效材料复用，以及签名导出。保留 P12/PEM 手动导入和已有安装链路。证书撤销必须确认精确列表；不会自动删除 profile、修改 capability 或改 Bundle ID。
+当前版本 **0.2.1 / build 7** 提供免费 Apple ID 自动签名，并修复 Feather 等 IPA 的代码签名预留填充被误判为无效容器的问题。功能包括提供方披露与同意、登录与六位验证码、免费 iOS 团队选择、证书及描述文件申请/复用、配对 TLS 设备核对、本机有效材料复用，以及签名导出。保留 P12/PEM 手动导入和已有安装链路。证书撤销必须确认精确列表；不会自动删除 profile、修改 capability 或改 Bundle ID。
 
-自动申请当前接受无扩展/嵌套 App、未加密的单一 arm64 IPA；FAT 主程序、DER entitlement 与额外 capability 暂不支持。CI 使用合成数据，176 项 XCTest、4 项打包测试与双平台编译已通过[验证运行](https://github.com/kevin9525/locsign-public-build/actions/runs/42321756131)。真实 Apple 登录、材料申请、安装及启动仍待[真机验收](docs/apple-id-acceptance.md)。配对连接此前已在 iPhone 15 Pro Max / iOS 18.7.8 通过；全局定位仍未接入。
+自动申请当前接受无扩展/嵌套 App、未加密的单一 arm64 IPA；FAT 主程序、DER entitlement 与额外 capability 暂不支持。CI 使用合成数据，179 项 XCTest、4 项打包测试与双平台编译已通过[修复验证运行](https://github.com/kevin9525/locsign-public-build/actions/runs/42346306254)。最终 IPA 的 0.2.1 / build 7 版本、资源及 CRC 已核验。Apple ID 登录已由用户确认成功；材料申请、签名、安装及启动仍待[真机验收](docs/apple-id-acceptance.md)。配对连接此前已在 iPhone 15 Pro Max / iOS 18.7.8 通过；全局定位仍未接入。
 
 Anisette 默认地址为 `https://mac-ani.jkcoxson.com`。使用前需同意 UUID、ADI 握手消息/ADI blob 和来源 IP 披露；可换地址或关闭；已有材料可在重新校验后本机签名，无需访问提供方或 Apple。密码仅用于本次 Apple 登录，会话和私钥保存到本机专用 Keychain。覆盖更新保留资料；明确退出清除该账号资料和当前自动签名产物。
 
@@ -39,7 +39,7 @@ python -m unittest discover -s Tests/BuildTools -v
 
 ### 没有签名证书时
 
-1. 用 Sideloadly 为未签名的 0.2.0 IPA 签名并安装；更新现有 LocSign 时使用原来的 Apple ID 和 Bundle ID。
+1. 用 Sideloadly 为未签名的 0.2.1 IPA 签名并安装；更新现有 LocSign 时使用原来的 Apple ID 和 Bundle ID。
 2. 开启 LocalDevVPN，在 LocSign 的“连接”页面保留默认设备地址 `10.7.0.1`，点“检测连接”。其他隧道请填写实际设备 IP，不填写网址或域名。
 3. 选择**这台手机**的电脑配对 plist，然后点“验证配对与安装服务”。已通过 USB 放入 LocSign 文档目录的文件可从“我的 iPhone → LocSign”选择。
 4. 成功结果会显示配对身份认证、文件传输服务连接、安装服务连接均通过。此检查不上传 IPA、不执行安装，无需 P12、mobileprovision 或 Apple ID 登录。
@@ -60,3 +60,5 @@ python -m unittest discover -s Tests/BuildTools -v
 0.1.3 配对证书兼容修复与失败/成功测试证据：[docs/spike/2026-11-05-pairing-tls-subject-fix.md](docs/spike/2026-11-05-pairing-tls-subject-fix.md)。
 
 0.1.4 真实证书对照、无 AKI 链构建修复和回归证据：[docs/spike/2026-11-06-pairing-chain-fix.md](docs/spike/2026-11-06-pairing-chain-fix.md)。
+
+0.2.1 Feather 签名填充兼容修复和回归证据：[docs/spike/2026-11-07-feather-preflight-fix.md](docs/spike/2026-11-07-feather-preflight-fix.md)。
