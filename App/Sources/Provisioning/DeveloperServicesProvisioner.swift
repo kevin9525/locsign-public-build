@@ -30,7 +30,7 @@ enum DeveloperServicesError: LocalizedError, Equatable {
         case .certificateResponse(let problem): return "证书签发响应：\(problem.message)"
         case .issuedCertificateMissing: return "已收到签发证书，但 Apple 证书列表中尚未找到对应记录"
         case .issuedCertificateConflict: return "Apple 证书列表中的匹配记录不唯一或证书内容不一致，已停止使用"
-        case .certificateRecoveryPending: return "Apple 已返回证书记录，但查询中尚未取得与当前私钥匹配的有效证书。申请材料已保留，请稍后重试；重试只查询，不会重复申请或撤销证书"
+        case .certificateRecoveryPending: return "证书申请结果尚待确认，查询中尚未取得与当前私钥匹配的有效证书。申请材料已保留，可稍后重试查询；重试不会重复申请或撤销证书"
         }
     }
 }
@@ -143,7 +143,6 @@ struct DeveloperServicesProvisioner: Sendable {
             if pending == nil || pending?.certificate != nil { pending = try keys.generate() }
             guard var identity = pending else { throw DeveloperServicesError.invalidResponse }
             try Task.checkCancellation()
-            try await store.savePending(identity)
             let issued: DeveloperCertificate
             do { issued = try await issueOrRecover(identity) }
             catch DeveloperServicesError.certificateQuota {
@@ -192,16 +191,33 @@ struct DeveloperServicesProvisioner: Sendable {
     }
 
     private func issueOrRecover(_ identity: PendingSigningMaterial) async throws -> DeveloperCertificate {
+        var pending = identity
+        pending.awaitingCertificate = true
+        // Commit uncertainty before the remote mutation. The guarded store rejects
+        // late writes after cancellation, so a response-time commit is too late.
+        try await store.savePending(pending)
+        try Task.checkCancellation()
         do { return try await gateway.createDevelopmentCertificate(csr: identity.csr) }
         catch {
             if Task.isCancelled || error is CancellationError { throw CancellationError() }
-            let reason = (error as? DeveloperServicesFailure)?.reason ?? (error as? DeveloperServicesError)
+            let failure = error as? DeveloperServicesFailure
+            let reason = failure?.reason ?? (error as? DeveloperServicesError)
+            // The gateway also reads certificates after issuance. A rejected read
+            // cannot prove the CSR was rejected; retain the marker in that case.
+            if failure == nil || failure?.step == .createCertificate {
+                let definitelyRejected: Bool
+                switch reason {
+                case .certificateQuota?, .appleRejected(_)?: definitelyRejected = true
+                case .rejected(let status)?: definitelyRejected = (400..<500).contains(status) && status != 408
+                default: definitelyRejected = false
+                }
+                if definitelyRejected {
+                    pending.awaitingCertificate = false
+                    try await store.savePending(pending)
+                    throw error
+                }
+            }
             guard reason == .certificateResponse(.missingContent) else { throw error }
-            var pending = identity
-            pending.awaitingCertificate = true
-            // Persist before reading: cancellation or a failed read must not cause
-            // the next user retry to issue another certificate for the same key.
-            try await store.savePending(pending)
             try Task.checkCancellation()
             let certificates = try await gateway.listCertificates()
             guard let certificate = try await recoverCertificate(for: pending, from: certificates) else {
