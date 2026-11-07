@@ -8,7 +8,7 @@ import ZIPFoundation
 final class IPAPackerTests: XCTestCase {
     @MainActor
     func testExplicitSigningIdentifierRetargetsOnlyTheSignedCopy() async throws {
-        let raw = try Data(contentsOf: fixture("test-profile", "mobileprovision"))
+        let raw = try Data(contentsOf: fixture("profile-valid", "mobileprovision"))
         let original = ProvisioningMaterial(privateKeyPEM: try String(contentsOf: fixture("test-key", "pem"), encoding: .utf8),
             profileData: raw, certificateExpiry: .distantFuture, profileExpiry: .distantFuture)
         var fields = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as? [String: Any])
@@ -33,8 +33,8 @@ final class IPAPackerTests: XCTestCase {
             XCTAssertEqual(try Data(contentsOf: signed.appendingPathComponent("embedded.mobileprovision")), raw)
             XCTAssertTrue(SigningEngine.shared.isSigned(signed.appendingPathComponent("Demo").path))
             let claims = try signedEntitlements(Data(contentsOf: signed.appendingPathComponent("Demo")))
-            XCTAssertEqual(claims["application-identifier"] as? String, "TEAM12345.com.test.app")
-            XCTAssertEqual(claims["keychain-access-groups"] as? [String], ["TEAM12345.com.test.app"])
+            XCTAssertEqual(claims["application-identifier"] as? String, "PREFIX1234.com.test.app")
+            XCTAssertEqual(claims["keychain-access-groups"] as? [String], ["PREFIX1234.com.test.app"])
             XCTAssertEqual(try Data(contentsOf: ipa), originalBytes)
         } catch { XCTFail("Explicit signing identifier was not applied: \(error.localizedDescription)") }
     }
