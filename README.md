@@ -2,9 +2,9 @@
 
 iOS 18 签名与定位工具的开发中项目，参考 NB 助手的核心使用流程。
 
-当前版本 **0.2.2 / build 8** 修复自动申请材料时错误信息丢失的问题：显示具体失败步骤，区分 HTTP 状态与 Apple 业务码，并保留网络失败和取消类别。保留 0.2.1 对 Feather 等 IPA 代码签名预留填充的兼容修复。功能包括提供方披露与同意、登录与六位验证码、免费 iOS 团队选择、证书及描述文件申请/复用、配对 TLS 设备核对、本机有效材料复用，以及签名导出。保留 P12/PEM 手动导入和已有安装链路。证书撤销必须确认精确列表；不会自动删除 profile、修改 capability 或改 Bundle ID。
+当前版本 **0.2.3 / build 9** 增加可选的个人签名标识：为同一团队与原 App 生成固定标识，申请材料、缓存核验和签名副本使用同一目标值。默认保留原标识；选择新标识后应用会独立安装，原 IPA 不变。注册错误可区分已识别的标识不可用、注册数量限制和字段错误，未知 HTTP 409 继续显示通用拒绝。保留 0.2.2 的错误步骤与返回码展示、0.2.1 的 Feather 签名填充兼容修复，以及 Apple ID 登录、材料申请/复用、P12/PEM 手动导入、签名导出和已有安装链路。证书撤销必须确认精确列表；不会自动删除 profile 或修改 capability。
 
-自动申请当前接受无扩展/嵌套 App、未加密的单一 arm64 IPA；FAT 主程序、DER entitlement 与额外 capability 暂不支持。CI 使用合成数据，185 项 XCTest、4 项打包测试与双平台编译已通过[修复验证运行](https://github.com/kevin9525/locsign-public-build/actions/runs/42352560129)。最终 IPA 的 0.2.2 / build 8 版本、资源及 CRC 已核验。Apple ID 登录已由用户确认成功；“获取材料并签名”曾返回丢失细节的请求拒绝错误，实际远端原因仍待诊断版复测。材料申请、签名、安装及启动仍待[真机验收](docs/apple-id-acceptance.md)。配对连接此前已在 iPhone 15 Pro Max / iOS 18.7.8 通过；全局定位仍未接入。
+自动申请当前接受无扩展/嵌套 App、未加密的单一 arm64 IPA；FAT 主程序、DER entitlement 与额外 capability 暂不支持。CI 使用合成数据，202 项 XCTest、4 项打包测试与双平台编译已通过[修复验证运行](https://github.com/kevin9525/locsign-public-build/actions/runs/42364714322)。最终 IPA 的 0.2.3 / build 9 版本、资源及 CRC 已核验。实际签名测试验证了输出标识、权限和原文件不变。Apple ID 登录及配对已由用户确认成功，当前真机阻塞点为注册应用标识 HTTP 409；个人标识模式的材料申请、签名、安装及启动仍待[真机验收](docs/apple-id-acceptance.md)。全局定位仍未接入。
 
 Anisette 默认地址为 `https://mac-ani.jkcoxson.com`。使用前需同意 UUID、ADI 握手消息/ADI blob 和来源 IP 披露；可换地址或关闭；已有材料可在重新校验后本机签名，无需访问提供方或 Apple。密码仅用于本次 Apple 登录，会话和私钥保存到本机专用 Keychain。覆盖更新保留资料；明确退出清除该账号资料和当前自动签名产物。
 
@@ -39,7 +39,7 @@ python -m unittest discover -s Tests/BuildTools -v
 
 ### 没有签名证书时
 
-1. 用 Sideloadly 为未签名的 0.2.2 IPA 签名并安装；更新现有 LocSign 时使用原来的 Apple ID 和 Bundle ID。
+1. 用 Sideloadly 为未签名的 0.2.3 IPA 签名并安装；更新现有 LocSign 时使用原来的 Apple ID 和 Bundle ID。
 2. 开启 LocalDevVPN，在 LocSign 的“连接”页面保留默认设备地址 `10.7.0.1`，点“检测连接”。其他隧道请填写实际设备 IP，不填写网址或域名。
 3. 选择**这台手机**的电脑配对 plist，然后点“验证配对与安装服务”。已通过 USB 放入 LocSign 文档目录的文件可从“我的 iPhone → LocSign”选择。
 4. 成功结果会显示配对身份认证、文件传输服务连接、安装服务连接均通过。此检查不上传 IPA、不执行安装，无需 P12、mobileprovision 或 Apple ID 登录。
@@ -64,3 +64,5 @@ python -m unittest discover -s Tests/BuildTools -v
 0.2.1 Feather 签名填充兼容修复和回归证据：[docs/spike/2026-11-07-feather-preflight-fix.md](docs/spike/2026-11-07-feather-preflight-fix.md)。
 
 0.2.2 开发者服务错误诊断修复和复测步骤：[docs/spike/2026-11-07-developer-services-errors.md](docs/spike/2026-11-07-developer-services-errors.md)。
+
+0.2.3 可选个人签名标识、注册错误分类和复测步骤：[docs/spike/2026-11-07-personal-signing-identifier.md](docs/spike/2026-11-07-personal-signing-identifier.md)。
