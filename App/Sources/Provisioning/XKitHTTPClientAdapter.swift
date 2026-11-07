@@ -45,7 +45,14 @@ final class XKitHTTPClientAdapter: HTTPClientProtocol, ClientTransport {
             guard (200..<300).contains(response.statusCode) else {
                 // Apple callers need the status (e.g. 403 to select another 2FA
                 // method), but must never receive raw error bodies for logging.
-                if case .apple = boundary { return (typedResponse, nil) }
+                if case .apple = boundary {
+                    if urlRequest.url?.host == "developerservices2.apple.com",
+                       urlRequest.url?.path == "/services/v1/bundleIds",
+                       let rejection = DeveloperRegistrationDiagnostics.rejection(status: response.statusCode, data: data) {
+                        throw rejection
+                    }
+                    return (typedResponse, nil)
+                }
                 throw ProvisioningNetworkError.httpStatus(response.statusCode)
             }
             return (typedResponse, HTTPBody(data))
@@ -78,6 +85,7 @@ final class XKitHTTPClientAdapter: HTTPClientProtocol, ClientTransport {
 
     fileprivate static func safeError(_ error: Error) -> Error {
         if Task.isCancelled || error is CancellationError { return CancellationError() }
+        if let error = error as? DeveloperServicesError { return error }
         return (error as? ProvisioningNetworkError) ?? ProvisioningNetworkError.transport
     }
 }

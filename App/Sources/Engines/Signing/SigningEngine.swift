@@ -18,12 +18,12 @@ final class SigningEngine {
     }
 
     func sign(ipaURL: URL, identity: SigningIdentity, profile: ProvisioningProfileData,
-              restrictKeychainToApplication: Bool = false) async throws -> URL {
+              restrictKeychainToApplication: Bool = false, signingBundleID: String? = nil) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
             queue.async {
                 do {
                     continuation.resume(returning: try self.signIPA(ipaURL, identity: identity, profile: profile,
-                        restrictKeychainToApplication: restrictKeychainToApplication))
+                        restrictKeychainToApplication: restrictKeychainToApplication, signingBundleID: signingBundleID))
                 } catch {
                     continuation.resume(throwing: error)
                 }
@@ -32,15 +32,19 @@ final class SigningEngine {
     }
 
     private func signIPA(_ ipaURL: URL, identity: SigningIdentity,
-                         profile: ProvisioningProfileData, restrictKeychainToApplication: Bool) throws -> URL {
+                         profile: ProvisioningProfileData, restrictKeychainToApplication: Bool,
+                         signingBundleID: String?) throws -> URL {
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tmp) }
         let app = try IPAPacker.unpack(ipaURL, into: tmp.appendingPathComponent("work"))
         let infoData = try Data(contentsOf: app.appendingPathComponent("Info.plist"))
-        guard let info = try PlistCodec.decode(infoData) as? [String: Any],
-              let bundleID = info["CFBundleIdentifier"] as? String,
-              profile.permits(bundleIdentifier: bundleID) else {
+        guard var info = try PlistCodec.decode(infoData) as? [String: Any],
+              let originalBundleID = info["CFBundleIdentifier"] as? String else {
+            throw LocSignError.signing("IPA 的应用信息无效")
+        }
+        let bundleID = try signingBundleID.map(ProvisioningSigningIdentifier.validate) ?? originalBundleID
+        guard profile.permits(bundleIdentifier: bundleID) else {
             throw LocSignError.signing("IPA 的 Bundle ID 与描述文件不匹配")
         }
         guard profile.expiry > Date() else {
@@ -50,6 +54,10 @@ final class SigningEngine {
             for case let file as URL in files where file != app && file.pathExtension == "appex" {
                 throw LocSignError.signing("此 IPA 包含扩展；需要为扩展配置独立描述文件，当前版本尚未支持")
             }
+        }
+        if signingBundleID != nil {
+            info["CFBundleIdentifier"] = bundleID
+            try PlistCodec.encodeXML(info).write(to: app.appendingPathComponent("Info.plist"), options: .atomic)
         }
         let exports = try FileManager.default.url(for: .cachesDirectory, in: .userDomainMask,
                                                    appropriateFor: nil, create: true)

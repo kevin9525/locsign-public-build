@@ -13,6 +13,7 @@ struct DeveloperCertificate: Codable, Sendable, Equatable {
 struct DeveloperProfile: Sendable { let id: String; let content: Data }
 enum DeveloperServicesError: LocalizedError, Equatable {
     case certificateQuota, rejected(Int), appleRejected(Int), invalidResponse, remoteChanged, network
+    case registrationRejected(Int, DeveloperRegistrationReason)
 
     var errorDescription: String? {
         switch self {
@@ -22,6 +23,7 @@ enum DeveloperServicesError: LocalizedError, Equatable {
         case .invalidResponse: return "Apple Developer Services 返回的数据无效，无法继续申请材料"
         case .remoteChanged: return "Apple Developer Services 证书列表发生变化，请重新申请"
         case .network: return "网络连接失败，请检查连接后重试"
+        case .registrationRejected(let status, let reason): return "\(reason.message)（HTTP \(status)）"
         }
     }
 }

@@ -4,6 +4,37 @@ import ZIPFoundation
 @testable import LocSign
 
 final class ProvisioningEngineMaterialTests: XCTestCase {
+    func testSelectedIdentifierIsValidatedAndReusedOnlyForTheSameTarget() async throws {
+        let fixture = try setup()
+        let account = try await fixture.engine.logIn(appleID: "user@example.com", password: "synthetic", twoFactorCode: { nil })
+        let ipa = try makeIPA(bundle: "com.original.app")
+        let bytes = try Data(contentsOf: ipa)
+        let request = ProvisioningRequest(accountID: account.id, teamID: "TEAM12345", ipaURL: ipa,
+            deviceUDID: "SYNTHETIC-UDID", signingBundleID: "com.test.app")
+        let material = try await fixture.engine.provision(request: request, confirmRevocation: { _ in false })
+        XCTAssertEqual(material.signingBundleID, "com.test.app")
+        XCTAssertEqual(try ProfileParser.parse(material.profileData).bundleID, "com.test.app")
+        let cached = try await fixture.engine.cachedMaterial(request: request)
+        XCTAssertEqual(cached?.signingBundleID, "com.test.app")
+        for target: String? in [nil, "com.other.app"] {
+            let mismatch = ProvisioningRequest(accountID: account.id, teamID: request.teamID, ipaURL: ipa,
+                deviceUDID: request.deviceUDID, signingBundleID: target)
+            do { _ = try await fixture.engine.cachedMaterial(request: mismatch); XCTFail("Material for another target reused") }
+            catch { XCTAssertEqual(error as? ProfileValidationError, .metadata) }
+        }
+        XCTAssertEqual(try Data(contentsOf: ipa), bytes)
+    }
+
+    func testBackendCannotSubstituteAnotherSigningIdentifier() async throws {
+        let fixture = try setup()
+        let account = try await fixture.engine.logIn(appleID: "user@example.com", password: "synthetic", twoFactorCode: { nil })
+        let request = ProvisioningRequest(accountID: account.id, teamID: "TEAM12345", ipaURL: fixture.ipa,
+            deviceUDID: "SYNTHETIC-UDID", signingBundleID: "com.other.app")
+        do { _ = try await fixture.engine.provision(request: request, confirmRevocation: { _ in false }); XCTFail("Unselected profile accepted") }
+        catch { XCTAssertEqual(error as? ProfileValidationError, .metadata) }
+        XCTAssertNil(try fixture.keychain.read(account: account.appleID, provider: "signing-material-v1", team: "TEAM12345", key: "active"))
+    }
+
     func testCachedMaterialsRestoreWithoutTokenOrProviderRequestsAndStillValidateDeviceBundleAndExpiry() async throws {
         let fixture = try setup()
         let account = try await fixture.engine.logIn(appleID: "user@example.com", password: "synthetic", twoFactorCode: { nil })

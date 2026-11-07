@@ -32,6 +32,9 @@ final class IPAPackerTests: XCTestCase {
             XCTAssertEqual(info["CFBundleIdentifier"] as? String, "com.test.app")
             XCTAssertEqual(try Data(contentsOf: signed.appendingPathComponent("embedded.mobileprovision")), raw)
             XCTAssertTrue(SigningEngine.shared.isSigned(signed.appendingPathComponent("Demo").path))
+            let claims = try signedEntitlements(Data(contentsOf: signed.appendingPathComponent("Demo")))
+            XCTAssertEqual(claims["application-identifier"] as? String, "TEAM12345.com.test.app")
+            XCTAssertEqual(claims["keychain-access-groups"] as? [String], ["TEAM12345.com.test.app"])
             XCTAssertEqual(try Data(contentsOf: ipa), originalBytes)
         } catch { XCTFail("Explicit signing identifier was not applied: \(error.localizedDescription)") }
     }
@@ -39,6 +42,34 @@ final class IPAPackerTests: XCTestCase {
     private func fixture(_ name: String, _ ext: String) throws -> URL {
         try XCTUnwrap(Bundle(for: IPAPackerTests.self).url(forResource: name, withExtension: ext),
                       "fixture \(name).\(ext) 缺失")
+    }
+
+    // Inspect the actual LC_CODE_SIGNATURE entitlement slot from the signed
+    // simulator executable, independently of the signer's input plist.
+    private func signedEntitlements(_ data: Data) throws -> [String: Any] {
+        func word(_ offset: Int, big: Bool = false) throws -> Int {
+            guard offset >= 0, offset <= data.count - 4 else { throw NSError(domain: "TestMachO", code: 1) }
+            let bytes = Array(data[offset..<(offset + 4)])
+            return (big ? bytes : Array(bytes.reversed())).reduce(0) { ($0 << 8) | Int($1) }
+        }
+        XCTAssertEqual(try word(0), 0xfeedfacf)
+        var cursor = 32
+        for _ in 0..<(try word(16)) {
+            if try word(cursor) == 0x1d {
+                let signature = try word(cursor + 8)
+                for index in 0..<(try word(signature + 8, big: true)) {
+                    let entry = signature + 12 + index * 8
+                    if try word(entry, big: true) == 5 {
+                        let blob = signature + (try word(entry + 4, big: true))
+                        let length = try word(blob + 4, big: true)
+                        guard length >= 8, blob + length <= data.count else { throw NSError(domain: "TestMachO", code: 2) }
+                        return try XCTUnwrap(PlistCodec.decode(Data(data[(blob + 8)..<(blob + length)])) as? [String: Any])
+                    }
+                }
+            }
+            cursor += try word(cursor + 4)
+        }
+        throw NSError(domain: "TestMachO", code: 3)
     }
 
     func testSignedIPARemainsReadableAfterAsyncSigningReturns() async throws {

@@ -6,7 +6,7 @@ struct AppleIDProvisioningSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var operation: Task<Void, Never>?
 
-    private var busy: Bool { operation != nil || account.isBusy || signing.isProvisioning }
+    private var busy: Bool { operation != nil || account.isBusy || signing.isProvisioning || signing.isPreparingIdentifier }
 
     var body: some View {
         NavigationStack {
@@ -40,6 +40,16 @@ struct AppleIDProvisioningSheet: View {
                     }
                     Section("设备与签名") {
                         LabeledContent("IPA", value: signing.ipaName)
+                        Toggle("使用个人签名标识", isOn: $signing.usesPersonalBundleID).disabled(busy)
+                        if signing.usesPersonalBundleID {
+                            TextField("个人签名标识", text: $signing.personalBundleID)
+                                .textInputAutocapitalization(.never).autocorrectionDisabled().disabled(busy)
+                            Button("生成此团队的固定标识") {
+                                start { await signing.suggestPersonalIdentifier(teamID: account.teamID) }
+                            }.disabled(busy || account.teamID.isEmpty || signing.ipaName == "未选择")
+                            Text("新标识会作为独立应用安装，不继承原应用数据。后续更新请保持此标识一致；原 IPA 不会被修改。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
                         LabeledContent("配对文件", value: signing.pairingName)
                         TextField("本地 VPN 设备 IP", text: $signing.deviceHost)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -59,7 +69,8 @@ struct AppleIDProvisioningSheet: View {
                             }
                         }
                         .disabled(busy || account.teamID.isEmpty || signing.verifiedDeviceUDID == nil ||
-                                  signing.ipaName == "未选择" || !account.providerAccepted || !account.providerEnabled || account.requiresLogin)
+                                  signing.ipaName == "未选择" || !account.providerAccepted || !account.providerEnabled || account.requiresLogin ||
+                                  (signing.usesPersonalBundleID && signing.personalBundleID.isEmpty))
                         Button("使用本机有效材料签名") {
                             guard let engine = account.engine else { return }
                             let team = account.teamID
@@ -68,10 +79,11 @@ struct AppleIDProvisioningSheet: View {
                                     providerAccepted: false, useCachedMaterial: true)
                             }
                         }
-                        .disabled(busy || account.teamID.isEmpty || signing.verifiedDeviceUDID == nil || signing.ipaName == "未选择")
+                        .disabled(busy || account.teamID.isEmpty || signing.verifiedDeviceUDID == nil || signing.ipaName == "未选择" ||
+                                  (signing.usesPersonalBundleID && signing.personalBundleID.isEmpty))
                         Text("复用时不访问提供方或 Apple，仍会核对配对设备、应用及材料有效期。材料过期后请重新登录申请。")
                             .font(.footnote).foregroundStyle(.secondary)
-                        Text("仅支持无扩展、未加密的单一 arm64 App，并保留原 Bundle ID。免费描述文件通常约 7 天，实际到期日以 Apple 返回并验证的材料为准。")
+                        Text("仅支持无扩展、未加密的单一 arm64 App。默认保留原 Bundle ID；原标识不可用时可选用个人签名标识。免费描述文件通常约 7 天，实际到期日以 Apple 返回并验证的材料为准。")
                             .font(.footnote).foregroundStyle(.secondary)
                         if signing.outputURL != nil {
                             Label("已生成签名 IPA，可返回签名页导出或安装", systemImage: "checkmark.circle.fill")
@@ -118,7 +130,7 @@ struct AppleIDProvisioningSheet: View {
                 }
                 if busy {
                     Section {
-                        HStack { ProgressView(); Text(signing.isProvisioning ? "正在获取材料并签名…" : "正在处理…") }
+                        HStack { ProgressView(); Text(signing.isPreparingIdentifier ? "正在检查 IPA 并生成标识…" : signing.isProvisioning ? "正在获取材料并签名…" : "正在处理…") }
                         Text("取消会停止本机后续操作，Apple 已完成的注册或撤销无法回滚。")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
@@ -126,7 +138,10 @@ struct AppleIDProvisioningSheet: View {
                 if let error = account.error ?? signing.error {
                     Section { Text(error).foregroundStyle(.red).textSelection(.enabled) }
                 }
-                Section { NavigationLink("第三方许可") { ThirdPartyLicensesView() } }
+                Section {
+                    LabeledContent("LocSign 版本", value: "\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "")（\(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "")）")
+                    NavigationLink("第三方许可") { ThirdPartyLicensesView() }
+                }
             }
             .navigationTitle("Apple ID 自动签名")
             .navigationBarTitleDisplayMode(.inline)
@@ -143,6 +158,15 @@ struct AppleIDProvisioningSheet: View {
             .onChange(of: account.endpoint) { _, _ in Task { await account.changeProvider(); await account.restore() } }
             .onChange(of: account.providerEnabled) { _, _ in Task { await account.changeProvider(); await account.restore() } }
             .onChange(of: account.providerAccepted) { _, accepted in if accepted { Task { await account.restore() } } }
+            .onChange(of: signing.usesPersonalBundleID) { _, enabled in
+                if enabled && signing.personalBundleID.isEmpty {
+                    start { await signing.suggestPersonalIdentifier(teamID: account.teamID) }
+                }
+            }
+            .onChange(of: account.teamID) { _, _ in
+                signing.personalBundleID = ""
+                if signing.usesPersonalBundleID { start { await signing.suggestPersonalIdentifier(teamID: account.teamID) } }
+            }
             .onDisappear {
                 operation?.cancel()
                 account.password = ""; account.code = ""

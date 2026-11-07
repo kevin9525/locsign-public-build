@@ -28,7 +28,7 @@ final class ProvisioningBackendLive: ProvisioningBackend, @unchecked Sendable {
     func provision(request: ProvisioningRequest, session: AppleAccountSession, store: any ProvisioningMaterialStoring,
                    confirmRevocation: @escaping @Sendable ([CertificateRevocation]) async -> Bool) async throws -> ProvisioningMaterial {
         try check()
-        let app = try ProvisioningIPAPreflight().inspect(request.ipaURL)
+        let app = try request.inspectedApp()
         guard session.providerID == configuration.providerID, session.account.id == request.accountID,
               session.account.teams.contains(where: { $0.id == request.teamID }), session.token.expiry > Date() else {
             throw ProvisioningError.invalidAccount

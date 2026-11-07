@@ -4,6 +4,20 @@ import OpenAPIRuntime
 @testable import LocSign
 
 final class AnisetteTransportTests: XCTestCase {
+    func testUnrecognizedAppleConflictKeepsStatusAndDiscardsBody() async throws {
+        let client = XKitHTTPClientAdapter(boundary: .apple, protocolClasses: [RegistrationConflictURLProtocol.self])
+        let result = try await client.makeRequest(XKit.HTTPRequest(url: URL(string: "https://developerservices2.apple.com/services/v1/unknown")!), requireHTTPSuccess: false)
+        XCTAssertEqual(result.response.status.code, 409)
+        XCTAssertTrue(result.body.isEmpty)
+    }
+
+    func testRegistrationClassificationDoesNotChangeAuthenticationResponseHandling() async throws {
+        let client = XKitHTTPClientAdapter(boundary: .apple, protocolClasses: [RegistrationConflictURLProtocol.self])
+        let result = try await client.makeRequest(XKit.HTTPRequest(url: URL(string: "https://gsa.apple.com/auth")!), requireHTTPSuccess: false)
+        XCTAssertEqual(result.response.status.code, 409)
+        XCTAssertTrue(result.body.isEmpty)
+    }
+
     func testAppleRegistrationRejectionKeepsOnlySafeClassification() async throws {
         let client = XKitHTTPClientAdapter(boundary: .apple, protocolClasses: [RegistrationConflictURLProtocol.self])
         do {
@@ -89,7 +103,10 @@ private final class RegistrationConflictURLProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         let response = HTTPURLResponse(url: request.url!, statusCode: 409, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
-        let data = Data(#"{"errors":[{"code":"ENTITY_ERROR.ATTRIBUTE.INVALID","detail":"An App ID with Identifier 'synthetic-server-secret' is not available. Please enter a different string."}]}"#.utf8)
+        let json = request.url?.path.hasSuffix("/unknown") == true
+            ? #"{"errors":[{"code":"UNKNOWN","detail":"synthetic-server-secret"}]}"#
+            : #"{"errors":[{"code":"ENTITY_ERROR.ATTRIBUTE.INVALID","detail":"An App ID with Identifier 'synthetic-server-secret' is not available. Please enter a different string."}]}"#
+        let data = Data(json.utf8)
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: data)
         client?.urlProtocolDidFinishLoading(self)

@@ -16,6 +16,7 @@ struct ProvisioningRequest: Sendable {
     let teamID: String
     let ipaURL: URL
     let deviceUDID: String
+    var signingBundleID: String? = nil
 }
 
 struct CertificateRevocation: Sendable, Equatable, Identifiable {
@@ -30,6 +31,7 @@ struct ProvisioningMaterial: Codable, Sendable {
     let profileData: Data
     let certificateExpiry: Date
     let profileExpiry: Date
+    var signingBundleID: String? = nil
 }
 
 enum ProvisioningError: LocalizedError, Equatable {

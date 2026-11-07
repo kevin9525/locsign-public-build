@@ -21,6 +21,13 @@ final class SigningViewModel: ObservableObject {
     @Published private(set) var certificateExpiry: Date?
     @Published private(set) var installProgress = 0.0
     @Published private(set) var installSucceeded = false
+    @Published var usesPersonalBundleID = false {
+        didSet { if usesPersonalBundleID != oldValue { generation = UUID(); discardOutput() } }
+    }
+    @Published var personalBundleID = "" {
+        didSet { if personalBundleID != oldValue { generation = UUID(); discardOutput() } }
+    }
+    @Published private(set) var isPreparingIdentifier = false
     @Published var deviceHost = "" {
         didSet {
             if deviceHost != oldValue {
@@ -52,10 +59,26 @@ final class SigningViewModel: ObservableObject {
     static func signProvisionedMaterial(_ ipa: URL, _ material: ProvisioningMaterial) async throws -> URL {
         let profile = try ProfileParser.parse(material.profileData)
         return try await SigningEngine.shared.sign(ipaURL: ipa, identity: .pem(material.privateKeyPEM), profile: profile,
-            restrictKeychainToApplication: true)
+            restrictKeychainToApplication: true, signingBundleID: material.signingBundleID)
+    }
+    func suggestPersonalIdentifier(teamID: String) async {
+        guard !isSigning, !isImporting, !isInstalling, !isProvisioning, !isPreparingIdentifier,
+              let ipaURL else { return }
+        isPreparingIdentifier = true
+        let operation = generation
+        defer { isPreparingIdentifier = false }
+        do {
+            let identifier = try await Task.detached(priority: .userInitiated) {
+                let original = try ProvisioningIPAPreflight().inspect(ipaURL)
+                return try ProvisioningSigningIdentifier.personal(original: original.bundleID, teamID: teamID)
+            }.value
+            try check(operation)
+            personalBundleID = identifier
+            error = nil
+        } catch { if generation == operation { self.error = safeMessage(error) } }
     }
     func verifyProvisioningDevice() async {
-        guard !isSigning, !isImporting, !isInstalling, !isProvisioning else { return }
+        guard !isSigning, !isImporting, !isInstalling, !isProvisioning, !isPreparingIdentifier else { return }
         guard let pairingData else { error = "请先导入这台手机的配对文件"; return }
         let host = deviceHost.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty else { error = "请输入手机本地 VPN 的设备地址"; return }
@@ -78,7 +101,7 @@ final class SigningViewModel: ObservableObject {
                           providerAccepted: Bool,
                           useCachedMaterial: Bool = false,
                           confirmRevocation: @escaping @Sendable ([CertificateRevocation]) async -> Bool = { _ in false }) async {
-        guard !isSigning, !isImporting, !isInstalling, !isProvisioning else { return }
+        guard !isSigning, !isImporting, !isInstalling, !isProvisioning, !isPreparingIdentifier else { return }
         guard useCachedMaterial || providerAccepted else { error = "请先确认 Anisette 提供方及数据用途"; return }
         guard !teamID.isEmpty, account.teams.contains(where: { $0.id == teamID }) else { error = "请选择可用的免费 iOS 团队"; return }
         guard let ipaURL, let pairingData, let verifiedDeviceUDID else { error = "请导入 IPA、配对文件并检测已配对设备"; return }
@@ -94,13 +117,15 @@ final class SigningViewModel: ObservableObject {
             provisioningEngine = nil
         }
         do {
+            let target = usesPersonalBundleID ? try ProvisioningSigningIdentifier.validate(personalBundleID) : nil
             let currentDevice = try await deviceProbe.deviceUDID(host: host, pairingData: pairingData)
             try check(operation)
             guard currentDevice == verifiedDeviceUDID else {
                 self.verifiedDeviceUDID = nil
                 throw ProvisioningError.materialInvalid("配对设备已变化，请重新检测")
             }
-            let request = ProvisioningRequest(accountID: account.id, teamID: teamID, ipaURL: ipaURL, deviceUDID: currentDevice)
+            let request = ProvisioningRequest(accountID: account.id, teamID: teamID, ipaURL: ipaURL,
+                deviceUDID: currentDevice, signingBundleID: target)
             let material: ProvisioningMaterial
             if useCachedMaterial {
                 guard let cached = try await engine.cachedMaterial(request: request) else {
@@ -149,7 +174,7 @@ final class SigningViewModel: ObservableObject {
     }
 
     func importFile(_ url: URL, as input: SigningInput) async {
-        guard !isSigning, !isImporting, !isInstalling, !isProvisioning else { return }
+        guard !isSigning, !isImporting, !isInstalling, !isProvisioning, !isPreparingIdentifier else { return }
         isImporting = true
         defer { isImporting = false }
         let scoped = url.startAccessingSecurityScopedResource()
@@ -172,6 +197,8 @@ final class SigningViewModel: ObservableObject {
                 if let previous = ipaURL { try? FileManager.default.removeItem(at: previous) }
                 ipaURL = copy
                 ipaName = url.lastPathComponent
+                usesPersonalBundleID = false
+                personalBundleID = ""
             case .identity:
                 let ext = url.pathExtension.lowercased()
                 guard ["p12", "pfx", "pem"].contains(ext) else {

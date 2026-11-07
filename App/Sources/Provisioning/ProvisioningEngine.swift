@@ -119,7 +119,7 @@ actor ProvisioningEngineLive: ProvisioningEngine {
         guard let data = try keychain.read(account: account.appleID, provider: Self.materialNamespace,
                                           team: request.teamID, key: "active") else { return nil }
         let active = try JSONDecoder().decode(ActiveSigningMaterial.self, from: data)
-        let app = try ProvisioningIPAPreflight().inspect(request.ipaURL)
+        let app = try request.inspectedApp()
         guard active.bundleID == app.bundleID, active.deviceUDID == request.deviceUDID,
               active.material.certificateExpiry > Date() else { throw ProfileValidationError.metadata }
         let validator = try profileValidator()
@@ -130,7 +130,8 @@ actor ProvisioningEngineLive: ProvisioningEngine {
             expectedCertificateDER: active.certificateDER, privateKeyPEM: Data(active.material.privateKeyPEM.utf8))
         try check(operation)
         return ProvisioningMaterial(privateKeyPEM: active.material.privateKeyPEM, profileData: verified.raw,
-            certificateExpiry: min(active.material.certificateExpiry, verified.certificateExpiry), profileExpiry: verified.expiry)
+            certificateExpiry: min(active.material.certificateExpiry, verified.certificateExpiry), profileExpiry: verified.expiry,
+            signingBundleID: app.bundleID)
     }
 
     private func profileValidator() throws -> ProvisioningProfileValidator {
@@ -160,7 +161,7 @@ actor ProvisioningEngineLive: ProvisioningEngine {
                   let certificate = pending.certificate, let der = certificate.der,
                   Data(material.privateKeyPEM.utf8) == pending.privateKeyPEM else { throw ProfileValidationError.certificate }
             let validator = try profileValidator()
-            let app = try ProvisioningIPAPreflight().inspect(request.ipaURL)
+            let app = try request.inspectedApp()
             // Independently enforce the backend's authenticated-material contract
             // before replacing active material; no plist dictionary is actor state.
             let verified = try validator.validate(data: material.profileData,
@@ -168,7 +169,8 @@ actor ProvisioningEngineLive: ProvisioningEngine {
                 expectedTeamID: request.teamID, expectedUDID: request.deviceUDID,
                 expectedCertificateDER: der, privateKeyPEM: pending.privateKeyPEM)
             let checkedMaterial = ProvisioningMaterial(privateKeyPEM: material.privateKeyPEM, profileData: verified.raw,
-                certificateExpiry: min(certificate.expiry, verified.certificateExpiry), profileExpiry: verified.expiry)
+                certificateExpiry: min(certificate.expiry, verified.certificateExpiry), profileExpiry: verified.expiry,
+                signingBundleID: app.bundleID)
             let active = ActiveSigningMaterial(certificateID: certificate.id, certificateDER: der, bundleID: verified.profile.bundleID,
                                               deviceUDID: request.deviceUDID, material: checkedMaterial)
             try check(operation)

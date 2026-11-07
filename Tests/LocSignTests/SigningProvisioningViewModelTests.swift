@@ -3,6 +3,45 @@ import XCTest
 
 final class SigningProvisioningViewModelTests: XCTestCase {
     @MainActor
+    func testOnlyExplicitPersonalModeSendsTheSelectedIdentifier() async throws {
+        let fixture = try await setup()
+        await fixture.model.verifyProvisioningDevice()
+        fixture.model.personalBundleID = "com.personal.test"
+        await fixture.model.provisionAndSign(using: fixture.engine, account: account, teamID: "TEAM12345", providerAccepted: true)
+        var requests = await fixture.engine.requests
+        XCTAssertNil(requests.last?.signingBundleID)
+        fixture.model.usesPersonalBundleID = true
+        await fixture.model.provisionAndSign(using: fixture.engine, account: account, teamID: "TEAM12345", providerAccepted: true)
+        requests = await fixture.engine.requests
+        XCTAssertEqual(requests.last?.signingBundleID, "com.personal.test")
+    }
+
+    @MainActor
+    func testInvalidPersonalIdentifierNeverSendsMaterialRequest() async throws {
+        let fixture = try await setup()
+        await fixture.model.verifyProvisioningDevice()
+        fixture.model.usesPersonalBundleID = true
+        for invalid in ["", "com.*", "com/escape", ".invalid", "com..invalid"] {
+            fixture.model.personalBundleID = invalid
+            await fixture.model.provisionAndSign(using: fixture.engine, account: account, teamID: "TEAM12345", providerAccepted: true)
+            let requests = await fixture.engine.requests
+            XCTAssertTrue(requests.isEmpty)
+            XCTAssertNotNil(fixture.model.error)
+        }
+    }
+
+    @MainActor
+    func testChangingPersonalIdentifierDiscardsOldOutput() async throws {
+        let fixture = try await setup()
+        await fixture.model.verifyProvisioningDevice()
+        await fixture.model.provisionAndSign(using: fixture.engine, account: account, teamID: "TEAM12345", providerAccepted: true)
+        XCTAssertNotNil(fixture.model.outputURL)
+        fixture.model.usesPersonalBundleID = true
+        XCTAssertNil(fixture.model.outputURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.signedIPA.path))
+    }
+
+    @MainActor
     func testAccountOutputCleanupDeletesIPAAndClearsExpiryAndSuccessState() async throws {
         let fixture = try await setup()
         await fixture.model.verifyProvisioningDevice()

@@ -194,7 +194,26 @@ private struct DeveloperStatusMiddleware: ClientMiddleware {
     func intercept(_ request: XKit.HTTPRequest, body: HTTPBody?, baseURL: URL, operationID: String,
                    next: @Sendable (XKit.HTTPRequest, HTTPBody?, URL) async throws -> (XKit.HTTPResponse, HTTPBody?)) async throws -> (XKit.HTTPResponse, HTTPBody?) {
         let result = try await next(request, body, baseURL)
-        guard (200..<300).contains(result.0.status.code) else { throw DeveloperServicesError.rejected(result.0.status.code) }
+        guard (200..<300).contains(result.0.status.code) else {
+            // Injected transports may provide bodies; the live adapter already
+            // classifies and discards them before they reach OpenAPI errors.
+            if request.path?.split(separator: "?").first == "/v1/bundleIds", let body = result.1 {
+                let data: Data?
+                do {
+                    data = try await body.reduce(into: Data()) {
+                        guard $0.count + $1.count <= 65_536 else { throw DeveloperServicesError.invalidResponse }
+                        $0.append(contentsOf: $1)
+                    }
+                } catch {
+                    if Task.isCancelled || error is CancellationError { throw CancellationError() }
+                    data = nil
+                }
+                if let data, let rejection = DeveloperRegistrationDiagnostics.rejection(status: result.0.status.code, data: data) {
+                    throw rejection
+                }
+            }
+            throw DeveloperServicesError.rejected(result.0.status.code)
+        }
         return result
     }
 }
