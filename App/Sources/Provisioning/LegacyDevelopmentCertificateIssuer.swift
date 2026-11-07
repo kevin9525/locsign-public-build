@@ -27,6 +27,9 @@ struct LegacyDevelopmentCertificateIssuer: Sendable {
             if error is ProvisioningNetworkError || error is URLError {
                 throw DeveloperServicesError.network
             }
+            if error is DecodingError || (error as? DeveloperServicesError) == .invalidResponse {
+                throw DeveloperServicesError.certificateResponseInvalid
+            }
             throw DeveloperServicesError.invalidResponse
         }
     }

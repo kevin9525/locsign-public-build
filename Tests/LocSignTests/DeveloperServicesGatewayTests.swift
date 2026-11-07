@@ -29,6 +29,48 @@ final class DeveloperServicesGatewayTests: XCTestCase {
         }
     }
 
+    func testIssuedCertificateRejectsUnrelatedSerialEvenWhenBytesMatch() async throws {
+        let der = try certificateFixture()
+        let transport = DeveloperAPIFixture()
+        await transport.setIssuedCertificate(der, listedSerial: "70", listedContent: der)
+        do { _ = try await gateway(transport).createDevelopmentCertificate(csr: "synthetic-csr"); XCTFail("Unrelated serial accepted") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("匹配已签发证书"), error.localizedDescription) }
+        let requests = await transport.requests
+        XCTAssertFalse(requests.contains { $0.override == "DELETE" })
+    }
+
+    func testIssuedCertificateRejectsDuplicateSerialAndConflictingCertificateContent() async throws {
+        for duplicate in [false, true] {
+            let der = try certificateFixture()
+            let transport = DeveloperAPIFixture()
+            await transport.setIssuedCertificate(der, listedSerial: "69", listedContent: duplicate ? der : Data([2]))
+            if duplicate { await transport.setDuplicateCertificate() }
+            do { _ = try await gateway(transport).createDevelopmentCertificate(csr: "synthetic-csr"); XCTFail("Ambiguous or conflicting certificate accepted") }
+            catch { XCTAssertTrue(error.localizedDescription.contains("匹配已签发证书"), error.localizedDescription) }
+        }
+    }
+
+    func testIssuedCertificateMissingFromListReportsResolutionInsteadOfIssuance() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setIssuedCertificate(try certificateFixture(), listedSerial: "70", listedContent: nil)
+        do { _ = try await gateway(transport).createDevelopmentCertificate(csr: "synthetic-csr"); XCTFail("Unrelated certificate accepted") }
+        catch {
+            XCTAssertTrue(error.localizedDescription.contains("匹配已签发证书"), error.localizedDescription)
+            XCTAssertTrue(error.localizedDescription.contains("尚未找到"), error.localizedDescription)
+            XCTAssertFalse(error.localizedDescription.contains("synthetic-sensitive-response"))
+        }
+        let requests = await transport.requests
+        XCTAssertEqual(requests.filter { $0.path.contains("submitDevelopmentCSR") }.count, 1)
+    }
+
+    func testInvalidIssuedCertificateStopsBeforeReadingOrMutatingCertificateList() async throws {
+        let transport = DeveloperAPIFixture()
+        do { _ = try await gateway(transport).createDevelopmentCertificate(csr: "synthetic-csr"); XCTFail("Invalid DER accepted") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("证书签发响应"), error.localizedDescription) }
+        let requests = await transport.requests
+        XCTAssertFalse(requests.contains { $0.path == "/v1/certificates" })
+    }
+
     func testRegistrationConflictDistinguishesUnavailableIdentifierFromRegistrationLimit() async throws {
         for (detail, expected) in [
             ("An App ID with Identifier 'synthetic-sensitive-response' is not available. Please enter a different string.", "应用标识不可用"),
@@ -143,12 +185,14 @@ final class DeveloperServicesGatewayTests: XCTestCase {
 
     func testCreatesExactBundleAndCertificateAndRevokesOnlyExplicitCertificateID() async throws {
         let transport = DeveloperAPIFixture()
+        let der = try certificateFixture()
+        await transport.setIssuedCertificate(der, listedSerial: "69", listedContent: der)
         let gateway = try gateway(transport)
         let bundle = try await gateway.createBundleID("com.test.app", name: "Test")
         XCTAssertEqual(bundle.identifier, "com.test.app")
         let certificate = try await gateway.createDevelopmentCertificate(csr: "synthetic-csr")
         XCTAssertEqual(certificate.id, "cert")
-        XCTAssertEqual(certificate.der, Data([1]))
+        XCTAssertEqual(certificate.der, der)
         try await gateway.revokeCertificate(id: "explicit-cert")
         let requests = await transport.requests
         XCTAssertEqual(requests.last?.path, "/v1/certificates/explicit-cert")
@@ -226,6 +270,10 @@ final class DeveloperServicesGatewayTests: XCTestCase {
         XCTAssertFalse(requests.contains { $0.override == "DELETE" && $0.path.contains("profiles") })
     }
 
+    private func certificateFixture() throws -> Data {
+        try Data(contentsOf: XCTUnwrap(Bundle(for: Self.self).url(forResource: "profile-dev", withExtension: "cer")))
+    }
+
     private func gateway(_ transport: DeveloperAPIFixture) throws -> XKitDeveloperServicesGateway {
         let storage = MemoryKeyValueStorage()
         try storage.setString("fixture", forKey: "XTLADIProviderID")
@@ -254,6 +302,7 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
     private var issuedCertificate = Data([1])
     private var listedSerial = "01"
     private var listedContent: Data? = Data([1])
+    private var duplicateCertificate = false
     private var certificateDate = "2035-01-01T00:00:00Z"
     private var malformedResponse = false
     private var transportFailure = false
@@ -265,6 +314,7 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
     func setConflictDetail(_ value: String) { conflict = true; conflictDetail = value }
     func setCertificateDate(_ value: String) { certificateDate = value }
     func setLegacyResultCode(_ code: Int) { legacyResultCode = code }
+    func setDuplicateCertificate() { duplicateCertificate = true }
     func setIssuedCertificate(_ der: Data, listedSerial: String, listedContent: Data?) {
         issuedCertificate = der
         self.listedSerial = listedSerial
@@ -325,7 +375,9 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
         } else if path == "/v1/certificates" {
             var certificateAttributes: [String: Any] = ["serialNumber": listedSerial, "name": "Synthetic", "expirationDate": certificateDate, "certificateType": "DEVELOPMENT"]
             if let listedContent { certificateAttributes["certificateContent"] = listedContent.base64EncodedString() }
-            payload = ["data": [["id": "cert", "type": "certificates", "attributes": certificateAttributes]]]
+            var certificates: [[String: Any]] = [["id": "cert", "type": "certificates", "attributes": certificateAttributes]]
+            if duplicateCertificate { certificates.append(["id": "another-cert", "type": "certificates", "attributes": certificateAttributes]) }
+            payload = ["data": certificates]
             status = .ok
         } else if path == "/v1/profiles", method == "POST" {
             payload = ["data": ["id": "profile", "type": "profiles", "attributes": ["profileContent": "Ag=="]]]

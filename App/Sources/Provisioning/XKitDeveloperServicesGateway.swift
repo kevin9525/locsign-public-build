@@ -65,12 +65,21 @@ struct XKitDeveloperServicesGateway: DeveloperServicesGateway {
     func createDevelopmentCertificate(csr: String) async throws -> DeveloperCertificate {
         do {
             let der = try await LegacyDevelopmentCertificateIssuer(auth: auth, provider: provider, client: client).issue(csr: csr)
-            // Legacy request IDs are not REST resource IDs. Resolve the certificate
-            // by its exact DER before associating it with a profile or deleting it.
-            guard let issued = try await listCertificates().first(where: { $0.der == der }) else {
-                throw DeveloperServicesError.invalidResponse
+            guard let parsed = try? XKit.Certificate(data: der) else {
+                throw DeveloperServicesError.certificateResponseInvalid
             }
-            return issued
+            // The collection may omit certificateContent. Resolve the REST resource
+            // using the serial parsed from the issued DER, never a legacy request ID.
+            let matches = try await listCertificates().filter { parsed.hasSerialNumber($0.serial) }
+            guard !matches.isEmpty else {
+                throw DeveloperServicesFailure(step: .resolveCertificate, reason: .issuedCertificateMissing)
+            }
+            guard matches.count == 1, let issued = matches.first,
+                  issued.der == nil || issued.der == der else {
+                throw DeveloperServicesFailure(step: .resolveCertificate, reason: .issuedCertificateConflict)
+            }
+            return DeveloperCertificate(id: issued.id, serial: issued.serial, name: issued.name,
+                                        expiry: issued.expiry, der: der)
         } catch {
             throw Self.failure(error, at: .createCertificate)
         }
