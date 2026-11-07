@@ -102,9 +102,13 @@ struct ProvisioningIPAPreflight: Sendable {
         }
     }
 
-    private func inspectSignature(_ data: Data, bundleID: String) throws {
-        guard try word(data, 0, big: true) == 0xfade0cc0,
-              Int(try word(data, 4, big: true)) == data.count else { throw unsupported("代码签名容器无效") }
+    private func inspectSignature(_ allocation: Data, bundleID: String) throws {
+        let logicalLength = Int(try word(allocation, 4, big: true))
+        guard try word(allocation, 0, big: true) == 0xfade0cc0,
+              logicalLength >= 12, logicalLength <= allocation.count else { throw unsupported("代码签名容器无效") }
+        // LC_CODE_SIGNATURE can reserve padding after the SuperBlob. All index
+        // and child bounds must use the declared container, not that allocation.
+        let data = Data(allocation.prefix(logicalLength))
         let count = Int(try word(data, 8, big: true))
         guard count <= 1024, count <= (data.count - 12) / 8 else { throw unsupported("代码签名索引无效") }
         var types = Set<UInt32>()
