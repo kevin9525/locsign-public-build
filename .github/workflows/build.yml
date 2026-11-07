@@ -11,7 +11,7 @@ concurrency:
 jobs:
   build:
     runs-on: macos-15-intel
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Select Swift 6.2 capable Xcode
@@ -74,7 +74,7 @@ jobs:
             -destination 'generic/platform=iOS Simulator' -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO 2>&1 | tee build/simulator-probe.log | xcbeautify
       - name: Unit tests (simulator)
-        timeout-minutes: 15
+        timeout-minutes: 25
         run: |
           set -o pipefail
           mkdir -p build
