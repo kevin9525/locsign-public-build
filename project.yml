@@ -49,8 +49,8 @@ targets:
       path: App/Sources/Info.plist
       properties:
         CFBundleDisplayName: LocSign
-        CFBundleShortVersionString: "0.2.0"
-        CFBundleVersion: "6"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         NSLocalNetworkUsageDescription: 检测本机设备服务连接，用于验证手机内签名安装和定位功能。
