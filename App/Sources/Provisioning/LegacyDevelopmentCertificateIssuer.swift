@@ -38,10 +38,16 @@ private struct DevelopmentCSRRequest: DeveloperServicesRequest {
     struct Response: Decodable, Sendable {
         struct Certificate: Decodable, Sendable {
             let certContent: Data
-            enum CodingKeys: String, CodingKey { case certContent, certificateContent }
+            enum CodingKeys: String, CodingKey { case certContent, certificateContent, attributes }
             init(from decoder: Decoder) throws {
-                let values = try decoder.container(keyedBy: CodingKeys.self)
-                let keys: [CodingKeys] = [.certContent, .certificateContent].filter { values.contains($0) }
+                let outer = try decoder.container(keyedBy: CodingKeys.self)
+                let contentKeys: [CodingKeys] = [.certContent, .certificateContent]
+                let directKeys = contentKeys.filter { outer.contains($0) }
+                let nested = outer.contains(.attributes) ? try outer.nestedContainer(keyedBy: CodingKeys.self, forKey: .attributes) : nil
+                let nestedKeys = contentKeys.filter { nested?.contains($0) == true }
+                guard directKeys.isEmpty || nestedKeys.isEmpty else { throw DeveloperServicesError.certificateResponse(.ambiguousContent) }
+                let values = directKeys.isEmpty ? (nested ?? outer) : outer
+                let keys = contentKeys.filter { values.contains($0) }
                 guard !keys.isEmpty else { throw DeveloperServicesError.certificateResponse(.missingContent) }
                 guard keys.count == 1, let key = keys.first else { throw DeveloperServicesError.certificateResponse(.ambiguousContent) }
                 if let data = try? values.decode(Data.self, forKey: key) { certContent = data }

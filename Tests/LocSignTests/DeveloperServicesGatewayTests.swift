@@ -5,6 +5,29 @@ import OpenAPIRuntime
 @testable import LocSign
 
 final class DeveloperServicesGatewayTests: XCTestCase {
+    func testPendingKeyRecoversThroughRealGatewayAndProfileValidationWithoutNewCSR() async throws {
+        func fixture(_ name: String, _ ext: String) throws -> Data {
+            try Data(contentsOf: XCTUnwrap(Bundle(for: Self.self).url(forResource: name, withExtension: ext)))
+        }
+        let transport = DeveloperAPIFixture()
+        let der = try certificateFixture()
+        let profile = try fixture("profile-valid", "mobileprovision")
+        await transport.setIssuedCertificate(der, listedSerial: "69", listedContent: nil)
+        await transport.setCertificateDetail(content: der)
+        await transport.setProfileContent(profile)
+        let pending = PendingSigningMaterial(privateKeyPEM: try fixture("test-key", "pem"), csr: "synthetic-csr", certificate: nil)
+        let store = GatewayPendingStore(pending: pending)
+        let provisioner = DeveloperServicesProvisioner(gateway: try gateway(transport), store: store,
+            keys: GatewayUnusedKeys(), anchors: [try fixture("profile-root", "cer")], now: { Date(timeIntervalSince1970: 1_800_000_000) })
+        let material = try await provisioner.provision(app: .init(bundleID: "com.test.app", name: "Test"), deviceUDID: "SYNTHETIC-UDID", teamID: "TEAM12345", confirmRevocation: { _ in XCTFail("Recovery must not request revocation"); return false })
+        XCTAssertEqual(material.profileData, profile)
+        let requests = await transport.requests
+        XCTAssertTrue(requests.contains { $0.path == "/v1/certificates/cert" })
+        XCTAssertTrue(requests.allSatisfy { $0.override == "GET" })
+        let saved = try await store.loadPending()
+        XCTAssertEqual(saved?.certificate?.der, der)
+    }
+
     func testLegacyCertificateInAttributesIsDecodedBeforeResourceResolution() async throws {
         let der = try certificateFixture()
         let transport = DeveloperAPIFixture()
@@ -13,6 +36,44 @@ final class DeveloperServicesGatewayTests: XCTestCase {
         let certificate = try await gateway(transport).createDevelopmentCertificate(csr: "synthetic-csr")
         XCTAssertEqual(certificate.id, "cert")
         XCTAssertEqual(certificate.der, der)
+    }
+
+    func testCertificateDetailFetchReturnsContentForExactRequestedResource() async throws {
+        let der = try certificateFixture()
+        let transport = DeveloperAPIFixture()
+        await transport.setCertificateDetail(content: der)
+        let certificate = try await gateway(transport).certificateDetails(id: "cert")
+        XCTAssertEqual(certificate.id, "cert")
+        XCTAssertEqual(certificate.der, der)
+        let requests = await transport.requests
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(requests.first?.path, "/v1/certificates/cert")
+        XCTAssertEqual(requests.first?.override, "GET")
+        XCTAssertFalse(requests.contains { $0.path.contains("submitDevelopmentCSR") })
+    }
+
+    func testCertificateDetailsRejectUnrelatedResourceAndNonDevelopmentType() async throws {
+        for invalidType in [false, true] {
+            let transport = DeveloperAPIFixture()
+            await transport.setCertificateDetail(content: try certificateFixture(), id: invalidType ? "cert" : "other", type: invalidType ? "DISTRIBUTION" : "DEVELOPMENT")
+            do { _ = try await gateway(transport).certificateDetails(id: "cert"); XCTFail("Unrelated certificate accepted") }
+            catch { XCTAssertEqual(error as? DeveloperServicesFailure, .init(step: .readCertificate, reason: .remoteChanged)) }
+        }
+    }
+
+    func testCertificateDetailWithoutContentRemainsUnavailable() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setCertificateDetail(content: nil)
+        let certificate = try await gateway(transport).certificateDetails(id: "cert")
+        XCTAssertNil(certificate.der)
+    }
+
+    func testLegacyDirectAndNestedCertificateFieldsCannotBeAmbiguous() async throws {
+        let transport = DeveloperAPIFixture()
+        let der = try certificateFixture()
+        try await transport.setLegacyPayload(["resultCode": 0, "certRequest": ["certContent": der, "attributes": ["certificateContent": der.base64EncodedString()]]])
+        do { _ = try await gateway(transport).createDevelopmentCertificate(csr: "synthetic-csr"); XCTFail("Ambiguous fields accepted") }
+        catch { XCTAssertEqual(error as? DeveloperServicesFailure, .init(step: .createCertificate, reason: .certificateResponse(.ambiguousContent))) }
     }
 
     func testLegacyPEMCertificateDataIsNormalizedBeforeResourceResolution() async throws {
@@ -419,6 +480,10 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
     private var listedContent: Data? = Data([1])
     private var duplicateCertificate = false
     private var legacyPayload: Data?
+    private var detailContent: Data?
+    private var detailID = "cert"
+    private var detailType = "DEVELOPMENT"
+    private var profileContent = Data([2])
     private var certificateDate = "2035-01-01T00:00:00Z"
     private var malformedResponse = false
     private var transportFailure = false
@@ -430,6 +495,10 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
     func setConflictDetail(_ value: String) { conflict = true; conflictDetail = value }
     func setCertificateDate(_ value: String) { certificateDate = value }
     func setLegacyResultCode(_ code: Int) { legacyResultCode = code }
+    func setProfileContent(_ content: Data) { profileContent = content }
+    func setCertificateDetail(content: Data?, id: String = "cert", type: String = "DEVELOPMENT") {
+        detailContent = content; detailID = id; detailType = type
+    }
     func setDuplicateCertificate() { duplicateCertificate = true }
     func setLegacyPayload(_ payload: [String: Any]) throws {
         legacyPayload = try PropertyListSerialization.data(fromPropertyList: payload, format: .xml, options: 0)
@@ -489,6 +558,11 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
         } else if path == "/v1/bundleIds/bundle/bundleIdCapabilities" {
             payload = ["data": [["id": "cap", "type": "bundleIdCapabilities", "attributes": ["capabilityType": "IN_APP_PURCHASE"]]]]
             status = .ok
+        } else if path == "/v1/certificates/cert" {
+            var certificateAttributes: [String: Any] = ["serialNumber": "69", "name": "Synthetic", "expirationDate": certificateDate, "certificateType": detailType]
+            if let detailContent { certificateAttributes["certificateContent"] = detailContent.base64EncodedString() }
+            payload = ["data": ["id": detailID, "type": "certificates", "attributes": certificateAttributes]]
+            status = .ok
         } else if path == "/v1/certificates", method == "POST" {
             payload = ["data": ["id": "cert", "type": "certificates", "attributes": ["serialNumber": "01", "name": "Synthetic", "expirationDate": certificateDate, "certificateContent": "AQ==", "certificateType": "DEVELOPMENT"]]]
             status = .created
@@ -503,11 +577,22 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
             payload = ["data": ["id": "profile", "type": "profiles", "attributes": ["profileContent": "Ag=="]]]
             status = .created
         } else if path == "/v1/bundleIds/bundle/profiles" {
-            payload = ["data": [["id": "profile", "type": "profiles", "attributes": ["profileContent": "Ag=="]]]]
+            payload = ["data": [["id": "profile", "type": "profiles", "attributes": ["profileContent": profileContent.base64EncodedString()]]]]
             status = .ok
         } else { throw DeveloperServicesError.invalidResponse }
         var complete = payload
         complete["links"] = ["self": "https://developerservices2.apple.com/services" + path]
         return (.init(status: status, headerFields: [.contentType: "application/json"]), HTTPBody(try JSONSerialization.data(withJSONObject: complete)))
     }
+}
+
+private struct GatewayUnusedKeys: ProvisioningKeyGenerating {
+    func generate() throws -> PendingSigningMaterial { throw DeveloperServicesError.invalidResponse }
+}
+private actor GatewayPendingStore: ProvisioningMaterialStoring {
+    var pending: PendingSigningMaterial?
+    init(pending: PendingSigningMaterial) { self.pending = pending }
+    func loadPending() async throws -> PendingSigningMaterial? { pending }
+    func savePending(_ value: PendingSigningMaterial) async throws { pending = value }
+    func invalidateCertificate(id: String) async throws { XCTFail("Recovery must not invalidate certificates") }
 }

@@ -84,6 +84,28 @@ struct XKitDeveloperServicesGateway: DeveloperServicesGateway {
             throw Self.failure(error, at: .createCertificate)
         }
     }
+    func certificateDetails(id: String) async throws -> DeveloperCertificate {
+        try await call(.readCertificate) { api in
+            let response = try await api.certificatesGetInstance(path: .init(id: id),
+                query: .init(fields_lbrack_certificates_rbrack_: [.name, .certificateType, .serialNumber, .expirationDate, .certificateContent]))
+            let value = try response.ok.body.json.data
+            let type = value.attributes?.certificateType
+            let name = type?.value1?.rawValue ?? type?.value2
+            guard value.id == id, name == "DEVELOPMENT" || name == "IOS_DEVELOPMENT" else {
+                throw DeveloperServicesError.remoteChanged
+            }
+            let certificate = try Self.certificate(value)
+            if let content = certificate.der {
+                let der = try CertificateResponseDecoder.decode(content)
+                guard let parsed = try? XKit.Certificate(data: der), parsed.hasSerialNumber(certificate.serial) else {
+                    throw DeveloperServicesError.remoteChanged
+                }
+                return DeveloperCertificate(id: certificate.id, serial: certificate.serial, name: certificate.name,
+                                            expiry: certificate.expiry, der: der)
+            }
+            return certificate
+        }
+    }
     func revokeCertificate(id: String) async throws {
         try await call(.revokeCertificate) { api in
             _ = try await api.certificatesDeleteInstance(path: .init(id: id)).noContent

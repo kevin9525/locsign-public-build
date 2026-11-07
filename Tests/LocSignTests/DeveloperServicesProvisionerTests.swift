@@ -15,6 +15,103 @@ final class DeveloperServicesProvisionerTests: XCTestCase {
         XCTAssertEqual(mutations, ["certificate"])
     }
 
+    func testOldPendingKeyRecoversFromCertificateDetailsBeforeAnyCSR() async throws {
+        let fixture = try setup(cached: true)
+        let loaded = try await fixture.store.loadPending()
+        var pending = try XCTUnwrap(loaded)
+        pending.certificate = nil
+        try await fixture.store.savePending(pending)
+        await fixture.gateway.setMetadataOnlyCertificates()
+        _ = try await run(fixture)
+        let mutations = await fixture.gateway.mutations
+        XCTAssertEqual(mutations, [])
+        let detailReads = await fixture.gateway.detailReads
+        XCTAssertEqual(detailReads, ["cert"])
+        let saved = try await fixture.store.loadPending()
+        XCTAssertEqual(saved?.certificate?.der, try data("profile-dev", "cer"))
+    }
+
+    func testUnavailableIssuancePersistsRecoveryStateAndDoesNotSubmitAgainOnRetry() async throws {
+        let fixture = try setup(cached: false)
+        await fixture.gateway.setMissingIssuanceContent()
+        await fixture.gateway.setMetadataOnlyCertificates()
+        await fixture.gateway.setDetailUnavailable()
+        for _ in 0..<2 {
+            do { _ = try await run(fixture); XCTFail("Missing certificate accepted") }
+            catch { XCTAssertEqual(error as? DeveloperServicesError, .certificateRecoveryPending) }
+        }
+        let saved = try await fixture.store.loadPending()
+        XCTAssertEqual(saved?.awaitingCertificate, true)
+        XCTAssertNil(saved?.certificate)
+        let mutations = await fixture.gateway.mutations
+        XCTAssertEqual(mutations, ["certificate"])
+        await fixture.gateway.setDetailUnavailable(false)
+        _ = try await run(fixture)
+        let recovered = try await fixture.store.loadPending()
+        XCTAssertEqual(recovered?.certificate?.id, "cert")
+        XCTAssertNotEqual(recovered?.awaitingCertificate, true)
+        let finalMutations = await fixture.gateway.mutations
+        XCTAssertEqual(finalMutations, ["certificate"])
+    }
+
+    func testRecoveryRejectsWrongPrivateKeyAndChangedDetailIdentity() async throws {
+        for changedIdentity in [false, true] {
+            let fixture = try setup(cached: true)
+            let loaded = try await fixture.store.loadPending()
+            let old = try XCTUnwrap(loaded)
+            var pending = PendingSigningMaterial(privateKeyPEM: changedIdentity ? old.privateKeyPEM : try data("profile-other-key", "pem"), csr: old.csr, certificate: nil)
+            pending.awaitingCertificate = true
+            try await fixture.store.savePending(pending)
+            await fixture.gateway.setMetadataOnlyCertificates()
+            if changedIdentity { await fixture.gateway.setDetailIdentityChanged() }
+            do { _ = try await run(fixture); XCTFail("Invalid recovery accepted") }
+            catch { XCTAssertEqual(error as? DeveloperServicesError, changedIdentity ? .remoteChanged : .certificateRecoveryPending) }
+            let mutations = await fixture.gateway.mutations
+            XCTAssertEqual(mutations, [])
+        }
+    }
+
+    func testRecoveryCancellationPreservesPendingKeyWithoutIssuingOrRevoking() async throws {
+        let fixture = try setup(cached: true)
+        let loaded = try await fixture.store.loadPending()
+        var pending = try XCTUnwrap(loaded)
+        pending.certificate = nil
+        pending.awaitingCertificate = true
+        try await fixture.store.savePending(pending)
+        await fixture.gateway.setMetadataOnlyCertificates()
+        await fixture.gateway.setDetailCancellation()
+        do { _ = try await run(fixture); XCTFail("Cancellation ignored") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        let mutations = await fixture.gateway.mutations
+        XCTAssertEqual(mutations, [])
+        let saved = try await fixture.store.loadPending()
+        XCTAssertEqual(saved?.privateKeyPEM, pending.privateKeyPEM)
+        XCTAssertEqual(saved?.awaitingCertificate, true)
+    }
+
+    func testRecoveryStateSurvivesSerializationAndOlderRecordsStillDecode() throws {
+        let legacy = Data(#"{"privateKeyPEM":"AQ==","csr":"synthetic-csr"}"#.utf8)
+        var pending = try JSONDecoder().decode(PendingSigningMaterial.self, from: legacy)
+        XCTAssertNil(pending.awaitingCertificate)
+        pending.awaitingCertificate = true
+        let restored = try JSONDecoder().decode(PendingSigningMaterial.self, from: JSONEncoder().encode(pending))
+        XCTAssertEqual(restored.awaitingCertificate, true)
+        XCTAssertEqual(restored.privateKeyPEM, Data([1]))
+    }
+
+    func testRecoveryRejectsMultipleMatchingCertificatesWithoutIssuance() async throws {
+        let fixture = try setup(cached: true)
+        let loaded = try await fixture.store.loadPending()
+        var pending = try XCTUnwrap(loaded)
+        pending.certificate = nil
+        try await fixture.store.savePending(pending)
+        await fixture.gateway.setDuplicateMatchingCertificate()
+        do { _ = try await run(fixture); XCTFail("Ambiguous certificate accepted") }
+        catch { XCTAssertEqual(error as? DeveloperServicesError, .issuedCertificateConflict) }
+        let mutations = await fixture.gateway.mutations
+        XCTAssertEqual(mutations, [])
+    }
+
     func testRecoversIssuedCertificateAfterLostResponseUsingDurablePendingKey() async throws {
         let fixture = try setup(cached: true)
         let loaded = try await fixture.store.loadPending()
@@ -131,7 +228,7 @@ final class DeveloperServicesProvisionerTests: XCTestCase {
     }
     private func setup(cached: Bool, missingDevice: Bool = false, missingBundle: Bool = false, missingProfile: Bool = false,
                        failProfile: Bool = false, quota: Bool = false, wrongProfile: Bool = false, capabilities: [String] = []) throws -> Fixture {
-        let cert = DeveloperCertificate(id: "cert", serial: "01", name: "Synthetic", expiry: now.addingTimeInterval(86400), der: try data("profile-dev", "cer"))
+        let cert = DeveloperCertificate(id: "cert", serial: "69", name: "Synthetic", expiry: now.addingTimeInterval(86400), der: try data("profile-dev", "cer"))
         let pending = PendingSigningMaterial(privateKeyPEM: try data("test-key", "pem"), csr: "synthetic-csr", certificate: cached ? cert : nil)
         let store = PendingStoreFixture(pending: cached ? pending : nil)
         let profile = DeveloperProfile(id: "profile", content: try data(wrongProfile ? "profile-unsigned" : "profile-valid", wrongProfile ? "plist" : "mobileprovision"))
@@ -176,7 +273,19 @@ private actor ProvisioningGatewayFixture: DeveloperServicesGateway {
     let capabilities: [String]
     var mutations: [String] = []
     private var missingIssuanceContent = false
+    private var metadataOnly = false
+    private var detailUnavailable = false
+    private var detailIdentityChanged = false
+    private var detailCancellation = false
+    var detailReads: [String] = []
     func setMissingIssuanceContent() { missingIssuanceContent = true; certs = [] }
+    func setMetadataOnlyCertificates() { metadataOnly = true }
+    func setDetailUnavailable(_ value: Bool = true) { detailUnavailable = value }
+    func setDetailIdentityChanged() { detailIdentityChanged = true }
+    func setDetailCancellation() { detailCancellation = true }
+    func setDuplicateMatchingCertificate() {
+        certs.append(.init(id: "duplicate", serial: cert.serial, name: cert.name, expiry: cert.expiry, der: cert.der))
+    }
     init(store: PendingStoreFixture, cert: DeveloperCertificate, profile: DeveloperProfile, now: Date, missingDevice: Bool, missingBundle: Bool, missingProfile: Bool, failProfile: Bool, quota: Bool, capabilities: [String]) {
         self.store = store; self.cert = cert; self.profile = profile; self.missingDevice = missingDevice; self.missingBundle = missingBundle
         self.missingProfile = missingProfile; self.failProfile = failProfile; self.quota = quota; self.capabilities = capabilities
@@ -187,7 +296,14 @@ private actor ProvisioningGatewayFixture: DeveloperServicesGateway {
     func registerDevice(udid: String) async throws -> DeveloperDevice { mutations.append("device:" + udid); return .init(id: "device", udid: udid, enabled: true) }
     func findExactBundleID(_ identifier: String) async throws -> DeveloperBundle? { missingBundle ? nil : .init(id: "bundle", identifier: "com.test.app", capabilities: capabilities) }
     func createBundleID(_ identifier: String, name: String) async throws -> DeveloperBundle { mutations.append("bundle:" + identifier); return .init(id: "bundle", identifier: identifier, capabilities: []) }
-    func listCertificates() async throws -> [DeveloperCertificate] { certs }
+    func listCertificates() async throws -> [DeveloperCertificate] {
+        certs.map { .init(id: $0.id, serial: $0.serial, name: $0.name, expiry: $0.expiry, der: metadataOnly ? nil : $0.der) }
+    }
+    func certificateDetails(id: String) async throws -> DeveloperCertificate {
+        detailReads.append(id)
+        if detailCancellation { throw CancellationError() }
+        return .init(id: detailIdentityChanged ? "wrong-cert" : cert.id, serial: cert.serial, name: cert.name, expiry: cert.expiry, der: detailUnavailable ? nil : cert.der)
+    }
     func changeCertificates() { certs.append(.init(id: "new", serial: "03", name: "Changed", expiry: Date(), der: nil)) }
     func expireCertificate() { certs = [.init(id: cert.id, serial: cert.serial, name: cert.name, expiry: Date(timeIntervalSince1970: 0), der: cert.der)] }
     func createDevelopmentCertificate(csr: String) async throws -> DeveloperCertificate {

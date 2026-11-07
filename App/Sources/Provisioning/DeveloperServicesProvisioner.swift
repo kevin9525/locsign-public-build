@@ -1,4 +1,5 @@
 import Foundation
+import XKit
 
 struct DeveloperDevice: Sendable, Equatable { let id: String; let udid: String; let enabled: Bool }
 struct DeveloperBundle: Sendable, Equatable { let id: String; let identifier: String; let capabilities: [String] }
@@ -15,6 +16,7 @@ enum DeveloperServicesError: LocalizedError, Equatable {
     case certificateQuota, rejected(Int), appleRejected(Int), invalidResponse, remoteChanged, network
     case registrationRejected(Int, DeveloperRegistrationReason)
     case certificateResponse(CertificateResponseProblem), issuedCertificateMissing, issuedCertificateConflict
+    case certificateRecoveryPending
 
     var errorDescription: String? {
         switch self {
@@ -28,6 +30,7 @@ enum DeveloperServicesError: LocalizedError, Equatable {
         case .certificateResponse(let problem): return "证书签发响应：\(problem.message)"
         case .issuedCertificateMissing: return "已收到签发证书，但 Apple 证书列表中尚未找到对应记录"
         case .issuedCertificateConflict: return "Apple 证书列表中的匹配记录不唯一或证书内容不一致，已停止使用"
+        case .certificateRecoveryPending: return "Apple 已返回证书记录，但查询中尚未取得与当前私钥匹配的有效证书。申请材料已保留，请稍后重试；重试只查询，不会重复申请或撤销证书"
         }
     }
 }
@@ -39,6 +42,7 @@ enum DeveloperServicesStep: String, Sendable {
     case createBundle = "注册应用标识"
     case readCapabilities = "查询应用权限"
     case listCertificates = "查询开发证书"
+    case readCertificate = "读取开发证书内容"
     case createCertificate = "申请开发证书"
     case resolveCertificate = "匹配已签发证书"
     case revokeCertificate = "撤销开发证书"
@@ -60,6 +64,7 @@ protocol DeveloperServicesGateway: Sendable {
     func findExactBundleID(_ identifier: String) async throws -> DeveloperBundle?
     func createBundleID(_ identifier: String, name: String) async throws -> DeveloperBundle
     func listCertificates() async throws -> [DeveloperCertificate]
+    func certificateDetails(id: String) async throws -> DeveloperCertificate
     func createDevelopmentCertificate(csr: String) async throws -> DeveloperCertificate
     func revokeCertificate(id: String) async throws
     func listProfiles(bundleID: String) async throws -> [DeveloperProfile]
@@ -70,6 +75,8 @@ struct PendingSigningMaterial: Codable, Sendable {
     let privateKeyPEM: Data
     let csr: String
     var certificate: DeveloperCertificate?
+    // Optional for compatibility with previously saved pending keys.
+    var awaitingCertificate: Bool? = nil
 }
 protocol ProvisioningMaterialStoring: Sendable {
     func loadPending() async throws -> PendingSigningMaterial?
@@ -122,16 +129,15 @@ struct DeveloperServicesProvisioner: Sendable {
             reusable = DeveloperCertificate(id: remote.id, serial: remote.serial, name: remote.name, expiry: remote.expiry, der: der)
         }
         if var saved = pending, saved.certificate == nil,
-           let recovered = certificates.first(where: { certificate in
-               guard certificate.expiry > now(), let der = certificate.der else { return false }
-               return LocSignVerifyProvisioningCertificate(der, saved.privateKeyPEM, now()) != nil
-           }) {
+           let recovered = try await recoverCertificate(for: saved, from: certificates) {
             saved.certificate = recovered
+            saved.awaitingCertificate = false
             try await store.savePending(saved)
             pending = saved
             reusable = recovered
         }
         if reusable == nil {
+            guard pending?.awaitingCertificate != true else { throw DeveloperServicesError.certificateRecoveryPending }
             // A key saved before a failed CSR request remains the only candidate
             // for recovery; otherwise create a fresh, durable pending identity.
             if pending == nil || pending?.certificate != nil { pending = try keys.generate() }
@@ -139,7 +145,7 @@ struct DeveloperServicesProvisioner: Sendable {
             try Task.checkCancellation()
             try await store.savePending(identity)
             let issued: DeveloperCertificate
-            do { issued = try await gateway.createDevelopmentCertificate(csr: identity.csr) }
+            do { issued = try await issueOrRecover(identity) }
             catch DeveloperServicesError.certificateQuota {
                 let candidates = try await gateway.listCertificates().sorted { $0.id < $1.id }
                 guard !candidates.isEmpty else { throw DeveloperServicesError.certificateQuota }
@@ -155,11 +161,12 @@ struct DeveloperServicesProvisioner: Sendable {
                     try await gateway.revokeCertificate(id: certificate.id)
                 }
                 try Task.checkCancellation()
-                issued = try await gateway.createDevelopmentCertificate(csr: identity.csr)
+                issued = try await issueOrRecover(identity)
             }
             guard issued.expiry > now(), let der = issued.der,
                   LocSignVerifyProvisioningCertificate(der, identity.privateKeyPEM, now()) != nil else { throw ProfileValidationError.certificate }
             identity.certificate = issued
+            identity.awaitingCertificate = false
             // Preserve an issued certificate/key even if the profile request fails.
             try await store.savePending(identity)
             pending = identity
@@ -182,5 +189,48 @@ struct DeveloperServicesProvisioner: Sendable {
         let profile = try await gateway.createDevelopmentProfile(bundleID: bundle.id, certificateID: certificate.id, deviceID: device.id)
         try Task.checkCancellation()
         return try validate(profile)
+    }
+
+    private func issueOrRecover(_ identity: PendingSigningMaterial) async throws -> DeveloperCertificate {
+        do { return try await gateway.createDevelopmentCertificate(csr: identity.csr) }
+        catch {
+            if Task.isCancelled || error is CancellationError { throw CancellationError() }
+            let reason = (error as? DeveloperServicesFailure)?.reason ?? (error as? DeveloperServicesError)
+            guard reason == .certificateResponse(.missingContent) else { throw error }
+            var pending = identity
+            pending.awaitingCertificate = true
+            // Persist before reading: cancellation or a failed read must not cause
+            // the next user retry to issue another certificate for the same key.
+            try await store.savePending(pending)
+            try Task.checkCancellation()
+            let certificates = try await gateway.listCertificates()
+            guard let certificate = try await recoverCertificate(for: pending, from: certificates) else {
+                throw DeveloperServicesError.certificateRecoveryPending
+            }
+            return certificate
+        }
+    }
+
+    private func recoverCertificate(for pending: PendingSigningMaterial,
+                                    from certificates: [DeveloperCertificate]) async throws -> DeveloperCertificate? {
+        var matches: [DeveloperCertificate] = []
+        for listed in certificates where listed.expiry > now() {
+            try Task.checkCancellation()
+            let candidate = listed.der == nil ? try await gateway.certificateDetails(id: listed.id) : listed
+            try Task.checkCancellation()
+            guard candidate.id == listed.id,
+                  candidate.serial.uppercased().drop(while: { $0 == "0" }) == listed.serial.uppercased().drop(while: { $0 == "0" }) else {
+                throw DeveloperServicesError.remoteChanged
+            }
+            guard candidate.expiry > now(), let der = candidate.der else { continue }
+            guard let parsed = try? XKit.Certificate(data: der), parsed.hasSerialNumber(candidate.serial) else {
+                throw DeveloperServicesError.remoteChanged
+            }
+            guard LocSignVerifyProvisioningCertificate(der, pending.privateKeyPEM, now()) != nil else { continue }
+            matches.append(.init(id: candidate.id, serial: candidate.serial, name: candidate.name,
+                                 expiry: min(listed.expiry, candidate.expiry), der: der))
+        }
+        guard matches.count <= 1 else { throw DeveloperServicesError.issuedCertificateConflict }
+        return matches.first
     }
 }
