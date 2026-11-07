@@ -27,9 +27,8 @@ struct LegacyDevelopmentCertificateIssuer: Sendable {
             if error is ProvisioningNetworkError || error is URLError {
                 throw DeveloperServicesError.network
             }
-            if error is DecodingError || (error as? DeveloperServicesError) == .invalidResponse {
-                throw DeveloperServicesError.certificateResponseInvalid
-            }
+            if let failure = error as? DeveloperServicesError { throw failure }
+            if error is DecodingError { throw DeveloperServicesError.certificateResponse(.envelope) }
             throw DeveloperServicesError.invalidResponse
         }
     }
@@ -39,18 +38,26 @@ private struct DevelopmentCSRRequest: DeveloperServicesRequest {
     struct Response: Decodable, Sendable {
         struct Certificate: Decodable, Sendable {
             let certContent: Data
-            enum CodingKeys: String, CodingKey { case certContent }
+            enum CodingKeys: String, CodingKey { case certContent, certificateContent }
             init(from decoder: Decoder) throws {
                 let values = try decoder.container(keyedBy: CodingKeys.self)
-                if let data = try? values.decode(Data.self, forKey: .certContent) { certContent = data }
-                else {
-                    let value = try values.decode(String.self, forKey: .certContent)
-                    guard let data = Data(base64Encoded: value), !data.isEmpty else { throw DeveloperServicesError.invalidResponse }
-                    certContent = data
-                }
+                let keys: [CodingKeys] = [.certContent, .certificateContent].filter { values.contains($0) }
+                guard !keys.isEmpty else { throw DeveloperServicesError.certificateResponse(.missingContent) }
+                guard keys.count == 1, let key = keys.first else { throw DeveloperServicesError.certificateResponse(.ambiguousContent) }
+                if let data = try? values.decode(Data.self, forKey: key) { certContent = data }
+                else if let text = try? values.decode(String.self, forKey: key) { certContent = Data(text.utf8) }
+                else { throw DeveloperServicesError.certificateResponse(.contentType) }
             }
         }
         let certRequest: Certificate
+        enum CodingKeys: String, CodingKey { case certRequest }
+        init(from decoder: Decoder) throws {
+            do {
+                let values = try decoder.container(keyedBy: CodingKeys.self)
+                certRequest = try values.decode(Certificate.self, forKey: .certRequest)
+            } catch let failure as DeveloperServicesError { throw failure }
+            catch { throw DeveloperServicesError.certificateResponse(.missingRequest) }
+        }
     }
     typealias Value = Data
     let team: String
@@ -60,7 +67,6 @@ private struct DevelopmentCSRRequest: DeveloperServicesRequest {
         ["teamId": team, "csrContent": csr, "machineId": "LocSign", "machineName": "LocSign"]
     }
     func parse(_ response: Response) async throws -> Data {
-        guard !response.certRequest.certContent.isEmpty else { throw DeveloperServicesError.invalidResponse }
-        return response.certRequest.certContent
+        try CertificateResponseDecoder.decode(response.certRequest.certContent)
     }
 }

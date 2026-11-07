@@ -66,7 +66,7 @@ struct XKitDeveloperServicesGateway: DeveloperServicesGateway {
         do {
             let der = try await LegacyDevelopmentCertificateIssuer(auth: auth, provider: provider, client: client).issue(csr: csr)
             guard let parsed = try? XKit.Certificate(data: der) else {
-                throw DeveloperServicesError.certificateResponseInvalid
+                throw DeveloperServicesError.certificateResponse(.x509)
             }
             // The collection may omit certificateContent. Resolve the REST resource
             // using the serial parsed from the issued DER, never a legacy request ID.

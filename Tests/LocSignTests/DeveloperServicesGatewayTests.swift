@@ -26,6 +26,89 @@ final class DeveloperServicesGatewayTests: XCTestCase {
         XCTAssertEqual(certificate.der, der)
     }
 
+    func testLegacyBase64CertificateAliasesAndWhitespaceResolveTheSameCertificate() async throws {
+        let der = try certificateFixture()
+        for field in ["certContent", "certificateContent"] {
+            let transport = DeveloperAPIFixture()
+            await transport.setIssuedCertificate(der, listedSerial: "69", listedContent: nil)
+            let encoded = " \r\n" + der.base64EncodedString(options: .lineLength64Characters) + "\t\n"
+            try await transport.setLegacyPayload(["resultCode": 0, "certRequest": [field: encoded]])
+            let certificate = try await gateway(transport).createDevelopmentCertificate(csr: "synthetic-csr")
+            XCTAssertEqual(certificate.der, der)
+        }
+    }
+
+    func testCertificateResponseProblemsAreDistinctAndNeverEchoResponseValues() async throws {
+        let cases: [([String: Any], CertificateResponseProblem)] = [
+            (["unexpected": "synthetic-sensitive-response"], .envelope),
+            (["resultCode": 0], .missingRequest),
+            (["resultCode": 0, "certRequest": "synthetic-sensitive-response"], .missingRequest),
+            (["resultCode": 0, "certRequest": ["other": "synthetic-sensitive-response"]], .missingContent),
+            (["resultCode": 0, "certRequest": ["certContent": 17]], .contentType),
+            (["resultCode": 0, "certRequest": ["certContent": Data()]], .emptyContent),
+            (["resultCode": 0, "certRequest": ["certContent": "synthetic-sensitive-response"]], .encoding),
+            (["resultCode": 0, "certRequest": ["certContent": Data([0x30, 0x01])]], .x509),
+            (["resultCode": 0, "certRequest": ["certContent": Data([1]), "certificateContent": "AQ=="]], .ambiguousContent)
+        ]
+        for (payload, expected) in cases {
+            let transport = DeveloperAPIFixture()
+            try await transport.setLegacyPayload(payload)
+            do { _ = try await gateway(transport).createDevelopmentCertificate(csr: "synthetic-csr"); XCTFail("Invalid response accepted") }
+            catch {
+                XCTAssertEqual(error as? DeveloperServicesFailure, .init(step: .createCertificate, reason: .certificateResponse(expected)))
+                XCTAssertFalse(error.localizedDescription.contains("synthetic-sensitive-response"))
+            }
+            let requests = await transport.requests
+            XCTAssertEqual(requests.filter { $0.path.contains("submitDevelopmentCSR") }.count, 1)
+            XCTAssertFalse(requests.contains { $0.path == "/v1/certificates" || $0.override == "DELETE" })
+        }
+    }
+
+    func testPEMRequiresOneCompleteCertificateWithoutExtraData() async throws {
+        let der = try certificateFixture()
+        let pem = "-----BEGIN CERTIFICATE-----\n" + der.base64EncodedString() + "\n-----END CERTIFICATE-----"
+        let malformed = [pem + pem, "untrusted-prefix" + pem, pem + "untrusted-suffix",
+                         pem.replacingOccurrences(of: "-----END CERTIFICATE-----", with: ""),
+                         pem.replacingOccurrences(of: "BEGIN CERTIFICATE", with: "BEGIN PRIVATE KEY")]
+        for content in malformed {
+            let transport = DeveloperAPIFixture()
+            await transport.setIssuedCertificate(Data(content.utf8), listedSerial: "69", listedContent: der)
+            do { _ = try await gateway(transport).createDevelopmentCertificate(csr: "synthetic-csr"); XCTFail("Malformed PEM accepted") }
+            catch { XCTAssertEqual(error as? DeveloperServicesFailure, .init(step: .createCertificate, reason: .certificateResponse(.encoding))) }
+        }
+    }
+
+    func testIssuedCertificateRejectsTrailingDERAndNonCertificateASN1() async throws {
+        for content in [try certificateFixture() + Data([0]), Data([0x30, 0x00])] {
+            let transport = DeveloperAPIFixture()
+            await transport.setIssuedCertificate(content, listedSerial: "69", listedContent: nil)
+            do { _ = try await gateway(transport).createDevelopmentCertificate(csr: "synthetic-csr"); XCTFail("Invalid X.509 accepted") }
+            catch { XCTAssertEqual(error as? DeveloperServicesFailure, .init(step: .createCertificate, reason: .certificateResponse(.x509))) }
+        }
+    }
+
+    func testCertificateContentLimitRejectsOversizedResponseBeforeResolution() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setIssuedCertificate(Data(repeating: 0x41, count: 1_048_577), listedSerial: "69", listedContent: nil)
+        do { _ = try await gateway(transport).createDevelopmentCertificate(csr: "synthetic-csr"); XCTFail("Oversized certificate accepted") }
+        catch { XCTAssertEqual(error as? DeveloperServicesFailure, .init(step: .createCertificate, reason: .certificateResponse(.oversizedContent))) }
+        let requests = await transport.requests
+        XCTAssertFalse(requests.contains { $0.path == "/v1/certificates" })
+    }
+
+    func testAppleRejectionCodeIsPreservedWithoutCertificateFields() async throws {
+        for code in [3250, 7460] {
+            let transport = DeveloperAPIFixture()
+            try await transport.setLegacyPayload(["resultCode": code, "resultString": "synthetic-sensitive-response"])
+            do { _ = try await gateway(transport).createDevelopmentCertificate(csr: "synthetic-csr"); XCTFail("Apple rejection ignored") }
+            catch {
+                if code == 7460 { XCTAssertEqual(error as? DeveloperServicesError, .certificateQuota) }
+                else { XCTAssertEqual(error as? DeveloperServicesFailure, .init(step: .createCertificate, reason: .appleRejected(code))) }
+                XCTAssertFalse(error.localizedDescription.contains("synthetic-sensitive-response"))
+            }
+        }
+    }
+
     func testIssuedCertificateResolvesMetadataOnlyListingBySerialAndRetainsIssuedBytes() async throws {
         let der = try Data(contentsOf: XCTUnwrap(Bundle(for: Self.self).url(forResource: "profile-dev", withExtension: "cer")))
         let transport = DeveloperAPIFixture()
@@ -187,11 +270,12 @@ final class DeveloperServicesGatewayTests: XCTestCase {
 
     func testLegacyIssuerSendsOnlyCSRAndSelectedTeamAndReturnsCertificateBytes() async throws {
         let transport = DeveloperAPIFixture()
-        await transport.setLegacyResultCode(0)
+        let der = try certificateFixture()
+        await transport.setIssuedCertificate(der, listedSerial: "69", listedContent: der)
         let gateway = try gateway(transport)
         let issuer = LegacyDevelopmentCertificateIssuer(auth: gateway.auth, provider: gateway.provider, client: gateway.client)
         let certificate = try await issuer.issue(csr: "synthetic-csr")
-        XCTAssertEqual(certificate, Data([1]))
+        XCTAssertEqual(certificate, der)
         let requests = await transport.requests
         let request = try XCTUnwrap(requests.last)
         XCTAssertTrue(request.path.contains("ios/submitDevelopmentCSR.action"))

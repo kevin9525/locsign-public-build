@@ -14,7 +14,7 @@ struct DeveloperProfile: Sendable { let id: String; let content: Data }
 enum DeveloperServicesError: LocalizedError, Equatable {
     case certificateQuota, rejected(Int), appleRejected(Int), invalidResponse, remoteChanged, network
     case registrationRejected(Int, DeveloperRegistrationReason)
-    case certificateResponseInvalid, issuedCertificateMissing, issuedCertificateConflict
+    case certificateResponse(CertificateResponseProblem), issuedCertificateMissing, issuedCertificateConflict
 
     var errorDescription: String? {
         switch self {
@@ -25,7 +25,7 @@ enum DeveloperServicesError: LocalizedError, Equatable {
         case .remoteChanged: return "Apple Developer Services 证书列表发生变化，请重新申请"
         case .network: return "网络连接失败，请检查连接后重试"
         case .registrationRejected(let status, let reason): return "\(reason.message)（HTTP \(status)）"
-        case .certificateResponseInvalid: return "证书签发响应格式无法识别或未包含有效的 X.509 证书"
+        case .certificateResponse(let problem): return "证书签发响应：\(problem.message)"
         case .issuedCertificateMissing: return "已收到签发证书，但 Apple 证书列表中尚未找到对应记录"
         case .issuedCertificateConflict: return "Apple 证书列表中的匹配记录不唯一或证书内容不一致，已停止使用"
         }
