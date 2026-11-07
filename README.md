@@ -2,9 +2,9 @@
 
 iOS 18 签名与定位工具的开发中项目，参考 NB 助手的核心使用流程。
 
-当前版本 **0.2.5 / build 11** 兼容证书签发响应中的 PEM、DER 和 Base64 内容，统一为经过 X.509 验证的 DER；拒绝多张混合证书、尾随数据、无效编码和模糊字段。固定 C01–C09 诊断区分响应结构、字段和证书解析错误。保留 0.2.4 的证书序列号关联、0.2.3 的可选个人签名标识，以及 Apple ID 登录、材料申请/复用、手动材料导入、签名导出和安装链路。个人标识在同一团队与原 App 下固定，新标识作为独立应用安装，原 IPA 不变。证书撤销必须确认精确列表；不会自动删除 profile 或修改 capability。
+当前版本 **0.2.6 / build 12** 针对证书签发响应缺少内容（C03）增加恢复流程：兼容嵌套的证书内容字段，使用已保存私钥，从开发证书列表及详情中查找匹配的有效证书。申请结果不确定时保留待恢复状态，用户重试只查询证书，不重复提交 CSR；只有明确的申请拒绝才允许再次申请。继续支持 PEM、DER、Base64 和 C01–C09 诊断、可选个人签名标识、Apple ID 登录、材料复用、手动导入、签名导出及安装。个人标识在同一团队与原 App 下固定，新标识作为独立应用安装，原 IPA 不变。证书撤销必须确认精确列表；不会自动删除 profile 或修改 capability。
 
-自动申请当前接受无扩展/嵌套 App、未加密的单一 arm64 IPA；FAT 主程序、DER entitlement 与额外 capability 暂不支持。0.2.5 的 216 项 XCTest、4 项打包测试及模拟器/设备构建均通过[CI](https://github.com/kevin9525/locsign-public-build/actions/runs/42378999851)，最终 IPA 的版本、应用标识、资源和 CRC 已核验。Apple ID 登录及配对已由用户确认成功，当前真机阻塞点在证书响应解析；0.2.5 材料申请、签名、安装及启动仍待[真机验收](docs/apple-id-acceptance.md)。现场响应格式尚未取得，不能断言 PEM 是唯一原因，详见[响应格式修复](docs/spike/2026-11-07-certificate-response-format.md)。旧版签发后未保存的证书不保证可恢复。全局定位仍未接入。
+自动申请当前接受无扩展/嵌套 App、未加密的单一 arm64 IPA；FAT 主程序、DER entitlement 与额外 capability 暂不支持。0.2.6 的 234 项 XCTest、4 项打包测试、模拟器/设备构建和 IPA 打包步骤已通过[CI](https://github.com/kevin9525/locsign-public-build/actions/runs/42389821702)，下载的最终 IPA 版本、应用标识、资源和 CRC 已核验。Apple ID 登录及配对已由用户确认成功，当前真机阻塞点是证书签发响应缺少内容；材料申请、签名、安装及启动仍待[真机验收](docs/apple-id-acceptance.md)。Apple 是否提供可恢复的证书内容尚未确认；查询不到匹配证书时会保留材料并停止，不保证恢复成功。断网或取消导致无法确认请求结果时，也可能持续停留在恢复状态。详见[缺失证书内容恢复](docs/spike/2026-11-07-missing-certificate-content.md)。全局定位仍未接入。
 
 Anisette 默认地址为 `https://mac-ani.jkcoxson.com`。使用前需同意 UUID、ADI 握手消息/ADI blob 和来源 IP 披露；可换地址或关闭；已有材料可在重新校验后本机签名，无需访问提供方或 Apple。密码仅用于本次 Apple 登录，会话和私钥保存到本机专用 Keychain。覆盖更新保留资料；明确退出清除该账号资料和当前自动签名产物。
 
@@ -39,7 +39,7 @@ python -m unittest discover -s Tests/BuildTools -v
 
 ### 没有签名证书时
 
-1. 用 Sideloadly 为未签名的 0.2.5 IPA 签名并安装；更新现有 LocSign 时使用原来的 Apple ID 和 Bundle ID。
+1. 用 Sideloadly 为未签名的 0.2.6 IPA 签名并安装；更新现有 LocSign 时使用原来的 Apple ID 和 Bundle ID。覆盖更新以保留待恢复私钥，不先卸载或退出清除。
 2. 开启 LocalDevVPN，在 LocSign 的“连接”页面保留默认设备地址 `10.7.0.1`，点“检测连接”。其他隧道请填写实际设备 IP，不填写网址或域名。
 3. 选择**这台手机**的电脑配对 plist，然后点“验证配对与安装服务”。已通过 USB 放入 LocSign 文档目录的文件可从“我的 iPhone → LocSign”选择。
 4. 成功结果会显示配对身份认证、文件传输服务连接、安装服务连接均通过。此检查不上传 IPA、不执行安装，无需 P12、mobileprovision 或 Apple ID 登录。
