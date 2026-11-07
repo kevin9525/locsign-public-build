@@ -99,6 +99,70 @@ final class DeveloperServicesProvisionerTests: XCTestCase {
         XCTAssertEqual(restored.privateKeyPEM, Data([1]))
     }
 
+    func testCancellationDuringIssuanceKeepsDurableRecoveryStateBeforeRetry() async throws {
+        let fixture = try setup(cached: false)
+        await fixture.gateway.setMissingIssuanceContent()
+        await fixture.gateway.setMetadataOnlyCertificates()
+        await fixture.gateway.setDetailUnavailable()
+        await fixture.gateway.setCancelOnIssuance(true)
+        let date = now
+        let provisioner = DeveloperServicesProvisioner(gateway: fixture.gateway, store: fixture.store,
+            keys: fixture.keys, anchors: fixture.anchors, now: { date })
+        let task = Task {
+            try await provisioner.provision(app: .init(bundleID: "com.test.app", name: "Test"),
+                deviceUDID: "SYNTHETIC-UDID", teamID: "TEAM12345", confirmRevocation: { _ in false })
+        }
+        do { _ = try await task.value; XCTFail("Cancellation ignored") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        let saved = try await fixture.store.loadPending()
+        XCTAssertEqual(saved?.awaitingCertificate, true)
+        XCTAssertEqual(saved?.privateKeyPEM, try data("test-key", "pem"))
+        await fixture.gateway.setCancelOnIssuance(false)
+        do { _ = try await run(fixture); XCTFail("Missing certificate accepted") }
+        catch { XCTAssertEqual(error as? DeveloperServicesError, .certificateRecoveryPending) }
+        let mutations = await fixture.gateway.mutations
+        XCTAssertEqual(mutations, ["certificate"])
+    }
+
+    func testUncertainNetworkOrServerFailureNeverResubmitsCSR() async throws {
+        for failure in [DeveloperServicesError.network, .rejected(503), .rejected(408)] {
+            let fixture = try setup(cached: false)
+            await fixture.gateway.setIssuanceFailure(failure)
+            do { _ = try await run(fixture); XCTFail("Issuance failure ignored") }
+            catch { XCTAssertEqual(error as? DeveloperServicesError, failure) }
+            let saved = try await fixture.store.loadPending()
+            XCTAssertEqual(saved?.awaitingCertificate, true)
+            do { _ = try await run(fixture); XCTFail("Uncertain issuance retried") }
+            catch { XCTAssertEqual(error as? DeveloperServicesError, .certificateRecoveryPending) }
+            let mutations = await fixture.gateway.mutations
+            XCTAssertEqual(mutations, ["certificate"])
+        }
+    }
+
+    func testDefiniteIssuanceRejectionAllowsLaterUserRetry() async throws {
+        for failure in [DeveloperServicesError.rejected(400), .rejected(401), .rejected(429), .appleRejected(1234)] {
+            let fixture = try setup(cached: false)
+            await fixture.gateway.setIssuanceFailure(failure)
+            do { _ = try await run(fixture); XCTFail("Rejection ignored") }
+            catch { XCTAssertEqual(error as? DeveloperServicesError, failure) }
+            let saved = try await fixture.store.loadPending()
+            XCTAssertNotEqual(saved?.awaitingCertificate, true)
+            await fixture.gateway.setIssuanceFailure(nil)
+            _ = try await run(fixture)
+            let mutations = await fixture.gateway.mutations
+            XCTAssertEqual(mutations, ["certificate", "certificate"])
+        }
+    }
+
+    func testFailedRecoveryMarkerWriteNeverSendsCSR() async throws {
+        let fixture = try setup(cached: false)
+        await fixture.store.setFailAwaitingWrite()
+        do { _ = try await run(fixture); XCTFail("Recovery marker write failure ignored") }
+        catch { XCTAssertEqual((error as? URLError)?.code, .cannotWriteToFile) }
+        let mutations = await fixture.gateway.mutations
+        XCTAssertEqual(mutations, [])
+    }
+
     func testRecoveryRejectsMultipleMatchingCertificatesWithoutIssuance() async throws {
         let fixture = try setup(cached: true)
         let loaded = try await fixture.store.loadPending()
@@ -190,6 +254,8 @@ final class DeveloperServicesProvisionerTests: XCTestCase {
         XCTAssertEqual(candidates.map(\.id), ["cert", "expired"])
         let mutations = await fixture.gateway.mutations
         XCTAssertFalse(mutations.contains { $0.hasPrefix("revoke:") })
+        let pending = try await fixture.store.loadPending()
+        XCTAssertNotEqual(pending?.awaitingCertificate, true)
     }
 
     func testRemoteCertificateChangeRequiresNewConfirmationWithoutDeletion() async throws {
@@ -251,11 +317,14 @@ private actor PendingStoreFixture: ProvisioningMaterialStoring {
     var pending: PendingSigningMaterial?
     var invalidated: [String] = []
     private var failWrites = false
+    private var failAwaitingWrite = false
     init(pending: PendingSigningMaterial?) { self.pending = pending }
     func setFailWrites() { failWrites = true }
+    func setFailAwaitingWrite() { failAwaitingWrite = true }
     func loadPending() async throws -> PendingSigningMaterial? { pending }
     func savePending(_ material: PendingSigningMaterial) async throws {
-        if failWrites { throw URLError(.cannotWriteToFile) }
+        try Task.checkCancellation()
+        if failWrites || (failAwaitingWrite && material.awaitingCertificate == true) { throw URLError(.cannotWriteToFile) }
         pending = material
     }
     func invalidateCertificate(id: String) async throws { invalidated.append(id) }
@@ -277,12 +346,19 @@ private actor ProvisioningGatewayFixture: DeveloperServicesGateway {
     private var detailUnavailable = false
     private var detailIdentityChanged = false
     private var detailCancellation = false
+    private var cancelOnIssuance = false
+    private var issuanceFailure: DeveloperServicesError?
     var detailReads: [String] = []
     func setMissingIssuanceContent() { missingIssuanceContent = true; certs = [] }
     func setMetadataOnlyCertificates() { metadataOnly = true }
     func setDetailUnavailable(_ value: Bool = true) { detailUnavailable = value }
     func setDetailIdentityChanged() { detailIdentityChanged = true }
     func setDetailCancellation() { detailCancellation = true }
+    func setCancelOnIssuance(_ value: Bool) { cancelOnIssuance = value }
+    func setIssuanceFailure(_ value: DeveloperServicesError?) {
+        issuanceFailure = value
+        if value != nil { certs = [] }
+    }
     func setDuplicateMatchingCertificate() {
         certs.append(.init(id: "duplicate", serial: cert.serial, name: cert.name, expiry: cert.expiry, der: cert.der))
     }
@@ -309,6 +385,8 @@ private actor ProvisioningGatewayFixture: DeveloperServicesGateway {
     func createDevelopmentCertificate(csr: String) async throws -> DeveloperCertificate {
         guard let pending = await store.pending, pending.csr == csr, !pending.privateKeyPEM.isEmpty else { throw DeveloperServicesError.invalidResponse }
         mutations.append("certificate")
+        if cancelOnIssuance { withUnsafeCurrentTask { $0?.cancel() } }
+        if let issuanceFailure { throw issuanceFailure }
         if missingIssuanceContent {
             certs = [cert]
             throw DeveloperServicesFailure(step: .createCertificate, reason: .certificateResponse(.missingContent))
