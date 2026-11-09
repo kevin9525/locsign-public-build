@@ -120,14 +120,17 @@ actor ProvisioningEngineLive: ProvisioningEngine {
                                           team: request.teamID, key: "active") else { return nil }
         let active = try JSONDecoder().decode(ActiveSigningMaterial.self, from: data)
         let app = try request.inspectedApp()
-        guard active.bundleID == app.bundleID, active.deviceUDID == request.deviceUDID,
-              active.material.certificateExpiry > Date() else { throw ProfileValidationError.metadata }
+        guard active.bundleID == app.bundleID, active.deviceUDID == request.deviceUDID else { return nil }
+        guard active.material.certificateExpiry > Date() else { return nil }
         let validator = try profileValidator()
         // Active identities carry their own certificate and key. A later failed
         // CSR/profile attempt may have replaced pending with another identity.
-        let verified = try validator.validate(data: active.material.profileData,
-            expectedBundleID: app.bundleID, expectedTeamID: request.teamID, expectedUDID: request.deviceUDID,
-            expectedCertificateDER: active.certificateDER, privateKeyPEM: Data(active.material.privateKeyPEM.utf8))
+        let verified: ValidatedProvisioningProfile
+        do {
+            verified = try validator.validate(data: active.material.profileData,
+                expectedBundleID: app.bundleID, expectedTeamID: request.teamID, expectedUDID: request.deviceUDID,
+                expectedCertificateDER: active.certificateDER, privateKeyPEM: Data(active.material.privateKeyPEM.utf8))
+        } catch ProfileValidationError.expired { return nil }
         try check(operation)
         return ProvisioningMaterial(privateKeyPEM: active.material.privateKeyPEM, profileData: verified.raw,
             certificateExpiry: min(active.material.certificateExpiry, verified.certificateExpiry), profileExpiry: verified.expiry,

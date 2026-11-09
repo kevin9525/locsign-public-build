@@ -4,7 +4,12 @@ import Combine
 @MainActor
 final class ConnectionViewModel: ObservableObject {
     @Published var host = "10.7.0.1" {
-        didSet { if host != oldValue { clearResult() } }
+        didSet {
+            if host != oldValue {
+                if !syncingSettings, let settings, settings.host != host { settings.host = host; host = settings.host }
+                clearResult()
+            }
+        }
     }
     @Published private(set) var isChecking = false
     @Published private(set) var message = ""
@@ -12,22 +17,43 @@ final class ConnectionViewModel: ObservableObject {
     @Published private(set) var pairingName = "未选择"
     @Published private(set) var pairedResult: PairedDeviceProbeResult?
     private var pairingData: Data?
+    private let settings: InstallationSettings?
+    private var subscriptions = Set<AnyCancellable>()
+    private var syncingSettings = false
     private let reachabilityCheck: (String) async throws -> ConnectionProbeResult
     private let pairingCheck: (String, Data) async throws -> PairedDeviceProbeResult
 
-    init(checkReachability: @escaping (String) async throws -> ConnectionProbeResult = {
+    init(settings: InstallationSettings? = nil, checkReachability: @escaping (String) async throws -> ConnectionProbeResult = {
         try await DeviceConnectionProbe().check(host: $0)
     }, checkPairing: @escaping (String, Data) async throws -> PairedDeviceProbeResult = {
         try await PairedDeviceProbe().check(host: $0, pairingData: $1)
     }) {
         self.reachabilityCheck = checkReachability
         self.pairingCheck = checkPairing
+        self.settings = settings
+        if let settings {
+            host = settings.host
+            settings.$pairing.sink { [weak self] saved in
+                self?.pairingData = saved?.data
+                self?.pairingName = saved?.name ?? "未选择"
+                self?.clearResult()
+            }.store(in: &subscriptions)
+            settings.$host.removeDuplicates().sink { [weak self] host in
+                guard let self else { return }
+                self.syncingSettings = true
+                if self.host != host { self.host = host }
+                self.syncingSettings = false
+            }.store(in: &subscriptions)
+            settings.$operationID.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &subscriptions)
+            if let error = settings.loadError { message = error }
+        }
     }
 
-    var canCheckPairing: Bool { pairingData != nil && !isChecking && !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    var deviceBusy: Bool { isChecking || settings?.operationID != nil }
+    var canCheckPairing: Bool { pairingData != nil && !deviceBusy && !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     func importPairing(_ url: URL) throws {
-        guard !isChecking else { return }
+        guard !deviceBusy else { return }
         clearResult()
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -38,12 +64,15 @@ final class ConnectionViewModel: ObservableObject {
         guard size <= 10_485_760 else { throw LocSignError.install("配对文件超过 10 MB") }
         let data = try Data(contentsOf: url)
         _ = try PairingRecord(data: data)
+        try settings?.savePairing(data: data, name: url.lastPathComponent)
         pairingData = data
         pairingName = url.lastPathComponent
     }
 
     func checkReachability() async {
-        guard !isChecking else { return }
+        guard !deviceBusy else { return }
+        let lock = settings?.beginOperation()
+        defer { if let lock { settings?.endOperation(lock) } }
         clearResult()
         isChecking = true
         defer { isChecking = false }
@@ -58,6 +87,8 @@ final class ConnectionViewModel: ObservableObject {
 
     func checkPairing() async {
         guard canCheckPairing, let pairingData else { return }
+        let lock = settings?.beginOperation()
+        defer { if let lock { settings?.endOperation(lock) } }
         clearResult()
         isChecking = true
         defer { isChecking = false }

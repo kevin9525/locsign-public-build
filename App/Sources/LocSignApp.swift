@@ -2,11 +2,12 @@ import SwiftUI
 
 @main
 struct LocSignApp: App {
+    @StateObject private var installation = InstallationSettings.live()
     var body: some Scene {
         WindowGroup {
             TabView {
-                SigningView().tabItem { Label("签名", systemImage: "signature") }
-                ConnectionView().tabItem { Label("连接", systemImage: "cable.connector") }
+                SigningView(settings: installation).tabItem { Label("安装", systemImage: "signature") }
+                ConnectionView(settings: installation).tabItem { Label("连接", systemImage: "cable.connector") }
                 NavigationStack {
                     ContentUnavailableView {
                         Label("定位功能验证中", systemImage: "location.circle")

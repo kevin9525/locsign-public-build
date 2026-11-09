@@ -4,13 +4,28 @@ import Combine
 @MainActor
 final class AppleIDProvisioningModel: ObservableObject {
     typealias EngineFactory = @MainActor (AnisetteProviderConfiguration) throws -> any ProvisioningEngine
-    @Published var endpoint = "https://mac-ani.jkcoxson.com"
-    @Published var providerEnabled = true
-    @Published var providerAccepted = false
+    @Published var endpoint = "https://mac-ani.jkcoxson.com" {
+        didSet {
+            if endpoint != oldValue { providerAccepted = false }
+            settings?.defaults.set(endpoint, forKey: "install.provider")
+        }
+    }
+    @Published var providerEnabled = true {
+        didSet { settings?.defaults.set(providerEnabled, forKey: "install.providerEnabled") }
+    }
+    @Published var providerAccepted = false {
+        didSet { settings?.defaults.set(providerAccepted ? endpoint : nil, forKey: "install.acceptedProvider") }
+    }
     @Published var appleID = ""
     @Published var password = ""
     @Published var code = ""
-    @Published var teamID = ""
+    @Published var teamID = "" {
+        didSet {
+            if let account, !teamID.isEmpty, account.teams.contains(where: { $0.id == teamID }) {
+                settings?.defaults.set(teamID, forKey: teamKey(account.appleID))
+            }
+        }
+    }
     @Published private(set) var account: ProvisioningAccount?
     @Published private(set) var isBusy = false
     @Published private(set) var awaitingCode = false
@@ -18,14 +33,21 @@ final class AppleIDProvisioningModel: ObservableObject {
     @Published private(set) var error: String?
     @Published private(set) var requiresLogin = true
     private let factory: EngineFactory
+    private let settings: InstallationSettings?
     private var currentEngine: (any ProvisioningEngine)?
     private var configuration: AnisetteProviderConfiguration?
     private var generation = UUID()
     private var codeContinuation: CheckedContinuation<String?, Never>?
     private var revocationContinuation: CheckedContinuation<Bool, Never>?
 
-    init(factory: EngineFactory? = nil) {
+    init(settings: InstallationSettings? = nil, factory: EngineFactory? = nil) {
+        self.settings = settings
         self.factory = factory ?? { try ProvisioningEngineLive.live(configuration: $0) }
+        if let defaults = settings?.defaults {
+            endpoint = defaults.string(forKey: "install.provider") ?? endpoint
+            providerEnabled = defaults.object(forKey: "install.providerEnabled") as? Bool ?? true
+            providerAccepted = defaults.string(forKey: "install.acceptedProvider") == endpoint
+        }
     }
     var engine: (any ProvisioningEngine)? { currentEngine }
 
@@ -85,11 +107,18 @@ final class AppleIDProvisioningModel: ObservableObject {
     }
 
     private func setAccount(_ value: ProvisioningAccount?) {
+        let previousTeam = account?.appleID == value?.appleID ? teamID : ""
         account = value
         if value == nil { requiresLogin = true }
-        teamID = value?.teams.count == 1 ? (value?.teams.first?.id ?? "") : ""
+        let remembered = value.flatMap { settings?.defaults.string(forKey: teamKey($0.appleID)) } ?? previousTeam
+        if let value, value.teams.contains(where: { $0.id == remembered }) { teamID = remembered }
+        else { teamID = value?.teams.count == 1 ? (value?.teams.first?.id ?? "") : "" }
         if let value { appleID = value.appleID }
     }
+    private func teamKey(_ appleID: String) -> String {
+        "install.team." + Data(ProvisioningKeychain.normalize(appleID).utf8).base64EncodedString()
+    }
+    func requireLogin() { requiresLogin = true }
 
     private func requestCode(operation: UUID) async -> String? {
         guard generation == operation, !Task.isCancelled, codeContinuation == nil else { return nil }

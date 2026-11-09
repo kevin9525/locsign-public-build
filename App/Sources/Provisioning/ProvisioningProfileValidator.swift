@@ -15,12 +15,14 @@ enum ProfileValidationError: LocalizedError, Equatable {
     case cms
     case metadata
     case certificate
+    case expired
 
     var errorDescription: String? {
         switch self {
         case .cms: return "描述文件的 Apple 签名或签发链无效，请重新获取材料"
         case .metadata: return "描述文件与所选团队、应用或设备不匹配，或包含不支持的权限"
         case .certificate: return "开发证书已失效或与本地私钥不匹配，请重新获取材料"
+        case .expired: return "描述文件已过期，请重新获取材料"
         }
     }
 }
@@ -77,7 +79,6 @@ struct ProvisioningProfileValidator {
               let appID = entitlements["application-identifier"] as? String,
               prefixes.contains(where: { !$0.isEmpty && !$0.contains(".") && appID == $0 + "." + expectedBundleID }),
               profile.bundleID == expectedBundleID,
-              profile.expiry > now,
               let creation = payload["CreationDate"] as? Date, creation <= now,
               profile.deviceUDIDs.contains(expectedUDID),
               (payload["ProvisionsAllDevices"] as? Bool) != true,
@@ -88,6 +89,7 @@ struct ProvisioningProfileValidator {
         guard let expiry = LocSignVerifyProvisioningCertificate(expectedCertificateDER, privateKeyPEM, now) else {
             throw ProfileValidationError.certificate
         }
+        guard profile.expiry > now else { throw ProfileValidationError.expired }
         return ValidatedProvisioningProfile(raw: data, signedContent: signedContent, profile: profile,
             uuid: uuid, certificateDER: expectedCertificateDER, certificateExpiry: expiry)
     }

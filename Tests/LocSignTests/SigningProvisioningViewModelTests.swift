@@ -3,6 +3,126 @@ import XCTest
 
 final class SigningProvisioningViewModelTests: XCTestCase {
     @MainActor
+    func testOneClickSigningFailureStopsBeforeUpload() async throws {
+        let fixture = try await setup(signerFails: true)
+        await fixture.model.installIPA(using: fixture.engine, account: account, teamID: "TEAM12345", canProvision: true)
+        XCTAssertNotNil(fixture.model.error)
+        XCTAssertNil(fixture.model.outputURL)
+        let installs = await fixture.installer.calls
+        XCTAssertEqual(installs, 0)
+    }
+
+    @MainActor
+    func testCancelledInstallerCannotPublishLateSuccess() async throws {
+        let fixture = try await setup(delayedInstall: true)
+        let task = Task { await fixture.model.installIPA(using: fixture.engine, account: account, teamID: "TEAM12345", canProvision: true) }
+        await fulfillment(of: [fixture.installer.started], timeout: 2)
+        await fixture.model.cancelProvisioning()
+        await fixture.installer.release()
+        await task.value
+        XCTAssertFalse(fixture.model.installSucceeded)
+        XCTAssertFalse(fixture.model.isOneClickInstalling)
+        XCTAssertNotNil(fixture.model.outputURL)
+    }
+
+    @MainActor
+    func testOneClickUsesCacheAndInstallsWithoutManualCheckOrProvider() async throws {
+        let fixture = try await setup()
+        await fixture.model.installIPA(using: fixture.engine, account: account, teamID: "TEAM12345", canProvision: false)
+        XCTAssertNil(fixture.model.error)
+        XCTAssertTrue(fixture.model.installSucceeded)
+        XCTAssertEqual(fixture.model.outputURL, fixture.signedIPA)
+        let requests = await fixture.engine.requests
+        let installs = await fixture.installer.calls
+        XCTAssertTrue(requests.isEmpty)
+        XCTAssertEqual(installs, 1)
+    }
+
+    @MainActor
+    func testOneClickCacheMissProvisionsThenInstalls() async throws {
+        let fixture = try await setup(cache: false)
+        await fixture.model.installIPA(using: fixture.engine, account: account, teamID: "TEAM12345", canProvision: true)
+        XCTAssertTrue(fixture.model.installSucceeded)
+        let requests = await fixture.engine.requests
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(requests.first?.deviceUDID, "SYNTHETIC-UDID")
+    }
+
+    @MainActor
+    func testOneClickCacheValidationFailureDoesNotRequestOrInstall() async throws {
+        let fixture = try await setup(cacheFailure: true)
+        await fixture.model.installIPA(using: fixture.engine, account: account, teamID: "TEAM12345", canProvision: true)
+        XCTAssertNotNil(fixture.model.error)
+        let requests = await fixture.engine.requests
+        let installs = await fixture.installer.calls
+        XCTAssertTrue(requests.isEmpty)
+        XCTAssertEqual(installs, 0)
+        XCTAssertFalse(fixture.model.needsAccountSetup)
+    }
+
+    @MainActor
+    func testOneClickCacheMissRequiresLoginBeforeNewMaterialRequest() async throws {
+        let fixture = try await setup(cache: false)
+        await fixture.model.installIPA(using: fixture.engine, account: account, teamID: "TEAM12345", canProvision: false)
+        XCTAssertTrue(fixture.model.needsAccountSetup)
+        XCTAssertFalse(fixture.model.installSucceeded)
+        let requests = await fixture.engine.requests
+        let installs = await fixture.installer.calls
+        XCTAssertTrue(requests.isEmpty)
+        XCTAssertEqual(installs, 0)
+    }
+
+    @MainActor
+    func testOneClickInstallFailureKeepsSignedFileAndDoesNotRetry() async throws {
+        let fixture = try await setup(installFails: true)
+        await fixture.model.installIPA(using: fixture.engine, account: account, teamID: "TEAM12345", canProvision: true)
+        XCTAssertFalse(fixture.model.installSucceeded)
+        XCTAssertNotNil(fixture.model.error)
+        XCTAssertEqual(fixture.model.outputURL, fixture.signedIPA)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.signedIPA.path))
+        let installs = await fixture.installer.calls
+        XCTAssertEqual(installs, 1)
+    }
+
+    @MainActor
+    func testOneClickDuplicateAndCancellationNeverInstallLateMaterial() async throws {
+        let fixture = try await setup(delayed: true, cache: false)
+        let task = Task { await fixture.model.installIPA(using: fixture.engine, account: account, teamID: "TEAM12345", canProvision: true) }
+        await fulfillment(of: [fixture.engine.started], timeout: 2)
+        await fixture.model.installIPA(using: fixture.engine, account: account, teamID: "TEAM12345", canProvision: true)
+        await fixture.model.cancelProvisioning()
+        await fixture.engine.release()
+        await task.value
+        XCTAssertNil(fixture.model.outputURL)
+        XCTAssertFalse(fixture.model.isOneClickInstalling)
+        let requests = await fixture.engine.requests
+        let installs = await fixture.installer.calls
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(installs, 0)
+    }
+
+    @MainActor
+    func testPersonalIdentifierIsRestoredForSameAppAndTeamAfterRelaunch() async throws {
+        let id = UUID().uuidString
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(id)
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: id))
+        addTeardownBlock { defaults.removePersistentDomain(forName: id); try? FileManager.default.removeItem(at: root) }
+        let settings = InstallationSettings(directory: root, defaults: defaults)
+        let first = try await setup(settings: settings)
+        first.model.usesPersonalBundleID = true
+        first.model.personalBundleID = "com.personal.stable"
+        await first.model.installIPA(using: first.engine, account: account, teamID: "TEAM12345", canProvision: false)
+        XCTAssertTrue(first.model.installSucceeded)
+        let second = try await setup(settings: InstallationSettings(directory: root, defaults: defaults))
+        await second.model.restoreSigningIdentifier(teamID: "TEAM12345")
+        XCTAssertTrue(second.model.usesPersonalBundleID)
+        XCTAssertEqual(second.model.personalBundleID, "com.personal.stable")
+        await second.model.restoreSigningIdentifier(teamID: "OTHERTEAM")
+        XCTAssertFalse(second.model.usesPersonalBundleID)
+        XCTAssertTrue(second.model.personalBundleID.isEmpty)
+    }
+
+    @MainActor
     func testSigningAutomaticallyAuthenticatesDeviceWithoutManualProbe() async throws {
         let fixture = try await setup()
         await fixture.model.provisionAndSign(using: fixture.engine, account: account,
@@ -144,14 +264,15 @@ final class SigningProvisioningViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func testChangingHostInvalidatesVerifiedDevice() async throws {
+    func testChangingHostInvalidatesVerifiedDeviceAndAutomaticallyChecksAgain() async throws {
         let fixture = try await setup()
         await fixture.model.verifyProvisioningDevice()
         fixture.model.deviceHost = "127.0.0.2"
         XCTAssertNil(fixture.model.verifiedDeviceUDID)
         await fixture.model.provisionAndSign(using: fixture.engine, account: account, teamID: "TEAM12345", providerAccepted: true)
         let requests = await fixture.engine.requests
-        XCTAssertTrue(requests.isEmpty)
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(fixture.model.verifiedDeviceUDID, "SYNTHETIC-UDID")
     }
 
     @MainActor
@@ -168,9 +289,12 @@ final class SigningProvisioningViewModelTests: XCTestCase {
         let probe: SigningDeviceProbeFixture
         let engine: SigningProvisioningEngineFixture
         let signedIPA: URL
+        let installer: OneClickInstallerFixture
     }
     @MainActor
-    private func setup(delayed: Bool = false, signerFails: Bool = false) async throws -> Fixture {
+    private func setup(delayed: Bool = false, signerFails: Bool = false, cache: Bool = true,
+                       cacheFailure: Bool = false, installFails: Bool = false, delayedInstall: Bool = false,
+                       settings: InstallationSettings? = nil) async throws -> Fixture {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
@@ -179,8 +303,10 @@ final class SigningProvisioningViewModelTests: XCTestCase {
         try Data("synthetic-ipa".utf8).write(to: ipa)
         try Data("synthetic-signed-ipa".utf8).write(to: signed)
         let probe = SigningDeviceProbeFixture()
-        let engine = SigningProvisioningEngineFixture(delayed: delayed)
-        let model = SigningViewModel(deviceProbe: probe, materialSigner: { _, material in
+        let engine = SigningProvisioningEngineFixture(delayed: delayed, cache: cache, cacheFailure: cacheFailure)
+        let installer = OneClickInstallerFixture(fail: installFails, delayed: delayedInstall)
+        let model = SigningViewModel(settings: settings, installer: installer, deviceProbe: probe,
+            inspectBundleID: { _ in "com.test.app" }, materialSigner: { _, material in
             XCTAssertEqual(material.privateKeyPEM, "synthetic-private-key")
             if signerFails { throw LocSignError.signing("synthetic signing failure") }
             return signed
@@ -188,7 +314,7 @@ final class SigningProvisioningViewModelTests: XCTestCase {
         model.deviceHost = "127.0.0.1"
         await model.importFile(ipa, as: .ipa)
         await model.importFile(try XCTUnwrap(Bundle(for: Self.self).url(forResource: "pairing-record", withExtension: "plist")), as: .pairing)
-        return Fixture(model: model, probe: probe, engine: engine, signedIPA: signed)
+        return Fixture(model: model, probe: probe, engine: engine, signedIPA: signed, installer: installer)
     }
 }
 
@@ -200,9 +326,13 @@ private actor SigningDeviceProbeFixture: PairedDeviceProbing {
 private actor SigningProvisioningEngineFixture: ProvisioningEngine {
     nonisolated let started = XCTestExpectation(description: "Material request entered engine")
     private let delayed: Bool
+    private let cache: Bool
+    private let cacheFailure: Bool
     private var continuation: CheckedContinuation<Void, Never>?
     var requests: [ProvisioningRequest] = []
-    init(delayed: Bool) { self.delayed = delayed }
+    init(delayed: Bool, cache: Bool, cacheFailure: Bool) {
+        self.delayed = delayed; self.cache = cache; self.cacheFailure = cacheFailure
+    }
     func release() { continuation?.resume(); continuation = nil }
     func logIn(appleID: String, password: String, twoFactorCode: @escaping TwoFactorCodeProvider) async throws -> ProvisioningAccount { throw ProvisioningError.invalidAccount }
     func restoreAccount() async throws -> ProvisioningAccount? { nil }
@@ -217,7 +347,28 @@ private actor SigningProvisioningEngineFixture: ProvisioningEngine {
             certificateExpiry: Date().addingTimeInterval(3600), profileExpiry: Date().addingTimeInterval(3600))
     }
     func cachedMaterial(request: ProvisioningRequest) async throws -> ProvisioningMaterial? {
-        ProvisioningMaterial(privateKeyPEM: "synthetic-private-key", profileData: Data("synthetic-profile".utf8),
+        if cacheFailure { throw ProfileValidationError.cms }
+        guard cache else { return nil }
+        return ProvisioningMaterial(privateKeyPEM: "synthetic-private-key", profileData: Data("synthetic-profile".utf8),
             certificateExpiry: .distantFuture, profileExpiry: .distantFuture)
+    }
+}
+
+private actor OneClickInstallerFixture: IPAInstalling {
+    nonisolated let started = XCTestExpectation(description: "Installation entered")
+    let fail: Bool
+    let delayed: Bool
+    private var continuation: CheckedContinuation<Void, Never>?
+    private(set) var calls = 0
+    init(fail: Bool, delayed: Bool) { self.fail = fail; self.delayed = delayed }
+    func release() { continuation?.resume(); continuation = nil }
+    func install(ipaURL: URL, host: String, pairingData: Data, progress: @Sendable (Double) async -> Void) async throws {
+        calls += 1
+        XCTAssertTrue(FileManager.default.fileExists(atPath: ipaURL.path))
+        XCTAssertEqual(host, "127.0.0.1")
+        _ = try PairingRecord(data: pairingData)
+        if delayed { await withCheckedContinuation { continuation in self.continuation = continuation; started.fulfill() } }
+        await progress(1)
+        if fail { throw LocSignError.install("synthetic install failure") }
     }
 }

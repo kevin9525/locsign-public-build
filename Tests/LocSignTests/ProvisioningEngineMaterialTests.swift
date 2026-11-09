@@ -29,8 +29,8 @@ final class ProvisioningEngineMaterialTests: XCTestCase {
         for target: String? in [nil, "com.other.app"] {
             let mismatch = ProvisioningRequest(accountID: account.id, teamID: request.teamID, ipaURL: ipa,
                 deviceUDID: request.deviceUDID, signingBundleID: target)
-            do { _ = try await fixture.engine.cachedMaterial(request: mismatch); XCTFail("Material for another target reused") }
-            catch { XCTAssertEqual(error as? ProfileValidationError, .metadata) }
+            let miss = try await fixture.engine.cachedMaterial(request: mismatch)
+            XCTAssertNil(miss)
         }
         XCTAssertEqual(try Data(contentsOf: ipa), bytes)
     }
@@ -64,19 +64,19 @@ final class ProvisioningEngineMaterialTests: XCTestCase {
         let withPendingRetry = try await offline.cachedMaterial(request: request)
         XCTAssertEqual(withPendingRetry?.profileData, cached?.profileData)
         let foreignDevice = ProvisioningRequest(accountID: account.id, teamID: request.teamID, ipaURL: fixture.ipa, deviceUDID: "DIFFERENT-UDID")
-        do { _ = try await offline.cachedMaterial(request: foreignDevice); XCTFail("Foreign device accepted") } catch {}
+        let foreign = try await offline.cachedMaterial(request: foreignDevice)
+        XCTAssertNil(foreign)
         let otherIPA = try makeIPA(bundle: "com.other.app")
-        do {
-            _ = try await offline.cachedMaterial(request: .init(accountID: account.id, teamID: request.teamID, ipaURL: otherIPA, deviceUDID: request.deviceUDID))
-            XCTFail("Foreign Bundle ID accepted")
-        } catch {}
+        let other = try await offline.cachedMaterial(request: .init(accountID: account.id, teamID: request.teamID, ipaURL: otherIPA, deviceUDID: request.deviceUDID))
+        XCTAssertNil(other)
         let active = try XCTUnwrap(fixture.keychain.read(account: account.appleID, provider: "signing-material-v1", team: request.teamID, key: "active"))
         var row = try XCTUnwrap(JSONSerialization.jsonObject(with: active) as? [String: Any])
         var material = try XCTUnwrap(row["material"] as? [String: Any])
         material["profileData"] = try data("profile-expired", "mobileprovision").base64EncodedString()
         row["material"] = material
         try fixture.keychain.write(JSONSerialization.data(withJSONObject: row), account: account.appleID, provider: "signing-material-v1", team: request.teamID, key: "active")
-        do { _ = try await offline.cachedMaterial(request: request); XCTFail("Expired signed profile accepted") } catch {}
+        let expired = try await offline.cachedMaterial(request: request)
+        XCTAssertNil(expired)
         try await offline.logout(account: account.appleID)
         let afterLogout = try await offline.restoreSigningAccount()
         XCTAssertNil(afterLogout)

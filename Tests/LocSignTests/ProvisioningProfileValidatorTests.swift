@@ -64,7 +64,7 @@ final class ProvisioningProfileValidatorTests: XCTestCase {
     }
 
     func testRejectsExpiredProfile() throws {
-        assertRejects(.metadata) { try self.validate(name: "profile-expired") }
+        assertRejects(.expired) { try self.validate(name: "profile-expired") }
     }
 
     func testRequiresExactDeviceTeamAndBundle() throws {

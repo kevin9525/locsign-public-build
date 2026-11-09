@@ -3,10 +3,12 @@ import SwiftUI
 struct AppleIDProvisioningSheet: View {
     @ObservedObject var account: AppleIDProvisioningModel
     @ObservedObject var signing: SigningViewModel
+    var continueInstallation: (() -> Void)? = nil
+    var cancelInstallation: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var operation: Task<Void, Never>?
 
-    private var busy: Bool { operation != nil || account.isBusy || signing.isProvisioning || signing.isPreparingIdentifier }
+    private var busy: Bool { operation != nil || account.isBusy || signing.busy }
 
     var body: some View {
         NavigationStack {
@@ -54,41 +56,11 @@ struct AppleIDProvisioningSheet: View {
                         TextField("本地 VPN 设备 IP", text: $signing.deviceHost)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
                             .disabled(busy)
-                        Button("检测已配对设备") { start { await signing.verifyProvisioningDevice() } }
-                            .disabled(busy || signing.pairingName == "未选择")
-                        if signing.verifiedDeviceUDID != nil {
-                            Label("配对设备已验证", systemImage: "checkmark.shield.fill").foregroundStyle(.green)
-                        }
-                        Button("获取材料并签名") {
-                            guard let engine = account.engine else { return }
-                            let team = account.teamID
-                            start {
-                                await signing.provisionAndSign(using: engine, account: identity, teamID: team,
-                                    providerAccepted: account.providerEnabled && account.providerAccepted,
-                                    confirmRevocation: { candidates in await account.confirmRevocation(candidates) })
-                            }
-                        }
-                        .disabled(busy || account.teamID.isEmpty || signing.verifiedDeviceUDID == nil ||
-                                  signing.ipaName == "未选择" || !account.providerAccepted || !account.providerEnabled || account.requiresLogin ||
-                                  (signing.usesPersonalBundleID && signing.personalBundleID.isEmpty))
-                        Button("使用本机有效材料签名") {
-                            guard let engine = account.engine else { return }
-                            let team = account.teamID
-                            start {
-                                await signing.provisionAndSign(using: engine, account: identity, teamID: team,
-                                    providerAccepted: false, useCachedMaterial: true)
-                            }
-                        }
-                        .disabled(busy || account.teamID.isEmpty || signing.verifiedDeviceUDID == nil || signing.ipaName == "未选择" ||
-                                  (signing.usesPersonalBundleID && signing.personalBundleID.isEmpty))
-                        Text("复用时不访问提供方或 Apple，仍会核对配对设备、应用及材料有效期。材料过期后请重新登录申请。")
+                        Text("安装时会自动验证配对设备，并优先复用本机有效材料。无需手动检测或导入描述文件。")
                             .font(.footnote).foregroundStyle(.secondary)
                         Text("仅支持无扩展、未加密的单一 arm64 App。默认保留原 Bundle ID；原标识不可用时可选用个人签名标识。免费描述文件通常约 7 天，实际到期日以 Apple 返回并验证的材料为准。")
                             .font(.footnote).foregroundStyle(.secondary)
-                        if signing.outputURL != nil {
-                            Label("已生成签名 IPA，可返回签名页导出或安装", systemImage: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
-                        }
+
                     }
                 }
                 if account.account == nil || account.requiresLogin {
@@ -128,6 +100,12 @@ struct AppleIDProvisioningSheet: View {
                         Button("撤销列表中的全部证书", role: .destructive) { account.resolveRevocation(true) }
                     }
                 }
+                if let continueInstallation {
+                    Section {
+                        Button("保存并继续安装", action: continueInstallation)
+                            .disabled(busy || account.account == nil || account.teamID.isEmpty || account.requiresLogin || !account.providerAccepted || !account.providerEnabled)
+                    }
+                }
                 if busy {
                     Section {
                         HStack { ProgressView(); Text(signing.isPreparingIdentifier ? "正在检查 IPA 并生成标识…" : signing.isProvisioning ? "正在获取材料并签名…" : "正在处理…") }
@@ -143,34 +121,37 @@ struct AppleIDProvisioningSheet: View {
                     NavigationLink("第三方许可") { ThirdPartyLicensesView() }
                 }
             }
-            .navigationTitle("Apple ID 自动签名")
+            .navigationTitle("Apple ID 与签名设置")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(busy ? "取消" : "完成") {
-                        operation?.cancel()
-                        Task { await signing.cancelProvisioning(); await account.cancel(); dismiss() }
+                        if signing.isOneClickInstalling {
+                            cancelInstallation?()
+                            dismiss()
+                        } else if operation != nil || account.isBusy {
+                            operation?.cancel()
+                            Task { await account.cancel(); dismiss() }
+                        } else { dismiss() }
                     }
                 }
             }
             .interactiveDismissDisabled(busy)
             .task { await account.restore() }
             .onChange(of: account.endpoint) { _, _ in Task { await account.changeProvider(); await account.restore() } }
-            .onChange(of: account.providerEnabled) { _, _ in Task { await account.changeProvider(); await account.restore() } }
+            .onChange(of: account.providerEnabled) { _, _ in Task { await account.restore() } }
             .onChange(of: account.providerAccepted) { _, accepted in if accepted { Task { await account.restore() } } }
             .onChange(of: signing.usesPersonalBundleID) { _, enabled in
                 if enabled && signing.personalBundleID.isEmpty {
                     start { await signing.suggestPersonalIdentifier(teamID: account.teamID) }
                 }
             }
-            .onChange(of: account.teamID) { _, _ in
-                signing.personalBundleID = ""
-                if signing.usesPersonalBundleID { start { await signing.suggestPersonalIdentifier(teamID: account.teamID) } }
-            }
             .onDisappear {
-                operation?.cancel()
+                if operation != nil {
+                    operation?.cancel()
+                    Task { await account.cancel() }
+                }
                 account.password = ""; account.code = ""
-                Task { await signing.cancelProvisioning(); await account.cancel() }
             }
         }
     }

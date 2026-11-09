@@ -2,7 +2,10 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ConnectionView: View {
-    @StateObject private var model = ConnectionViewModel()
+    @StateObject private var model: ConnectionViewModel
+    init(settings: InstallationSettings) {
+        _model = StateObject(wrappedValue: ConnectionViewModel(settings: settings))
+    }
     @State private var task: Task<Void, Never>?
     @State private var importing = false
 
@@ -18,7 +21,7 @@ struct ConnectionView: View {
                 Section {
                     TextField("设备 IP / 本地 VPN 地址", text: $model.host)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
-                        .disabled(task != nil)
+                        .disabled(task != nil || model.deviceBusy)
                     Button("检测连接") { start(pairing: false) }
                         .disabled(task != nil || model.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 } header: {
@@ -35,7 +38,7 @@ struct ConnectionView: View {
                             Image(systemName: "folder")
                         }
                     }
-                    .disabled(task != nil)
+                    .disabled(task != nil || model.deviceBusy)
                     Button("验证配对与安装服务") { start(pairing: true) }
                         .disabled(task != nil || !model.canCheckPairing)
                 } header: {
