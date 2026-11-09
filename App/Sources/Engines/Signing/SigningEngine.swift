@@ -79,9 +79,7 @@ final class SigningEngine {
                                restrictKeychainToApplication: Bool) throws -> URL {
         let profileFile = workDir.appendingPathComponent("embedded.mobileprovision")
         try profile.raw.write(to: profileFile)
-        // The profile passed to zsign is also the profile that must ship inside the app bundle.
-        // Without this replacement, zsign can produce a signed Mach-O with no embedded profile.
-        try profile.raw.write(to: app.appendingPathComponent("embedded.mobileprovision"), options: [.atomic])
+        // The patched local Zsign dependency embeds this profile before sealing resources.
         let entsFile = workDir.appendingPathComponent("entitlements.plist")
         try profile.signingEntitlements(for: bundleID, restrictKeychainToApplication: restrictKeychainToApplication).write(to: entsFile)
         let keyFile = workDir.appendingPathComponent("identity")
@@ -110,10 +108,11 @@ final class SigningEngine {
         guard ok else { throw LocSignError.signing("zsign 签名返回失败（详见日志）") }
         AppLogger.log(.info, "sign", "zsign 签名完成")
 
-        // Zsign may remove the profile while rewriting the bundle. Restore the
-        // exact profile selected by the caller before packaging the result.
-        try profile.raw.write(to: app.appendingPathComponent("embedded.mobileprovision"),
-                              options: [.atomic])
+        // Never repair bundle contents after signing: an added/replaced profile
+        // invalidates the resource seal even when the Mach-O is signed.
+        guard (try? Data(contentsOf: app.appendingPathComponent("embedded.mobileprovision"))) == profile.raw else {
+            throw LocSignError.signing("签名产物中的描述文件缺失或与所选材料不一致，请重新签名")
+        }
 
         try IPAPacker.repack(appURL: app, outputURL: outputURL)
         return outputURL

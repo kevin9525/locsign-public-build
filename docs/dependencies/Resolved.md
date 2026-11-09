@@ -24,7 +24,7 @@ The checked-in `.ci/Package.resolved` preserves the exact remote revisions below
 | swift-system | 1.8.1 | `869129b7bf4ecc57b97d0193ad29690ca2134750` | [license](licenses/swift-system.txt) |
 | xctest-dynamic-overlay | 1.13.1 | `d9308ad679143c26a30dec52daefe82f54af2b82` | [license](licenses/xctest-dynamic-overlay.txt) |
 | zipfoundation | 0.9.20 | `22787ffb59de99e5dc1fbfe80b19c97a904ad48d` | [license](licenses/zipfoundation.txt) |
-| zsign-package | revision | `c4ba9da4283031c07efa03bce42c4b8602d22e73` | [license](licenses/zsign-package.txt) |
+| zsign-package | local profile-seal patch | `c4ba9da4283031c07efa03bce42c4b8602d22e73` | [license](licenses/zsign-package.txt) |
 
 Locally preserved source:
 

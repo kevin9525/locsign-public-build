@@ -7,16 +7,15 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.2.8"
-    CURRENT_PROJECT_VERSION: "14"
+    MARKETING_VERSION: "0.2.9"
+    CURRENT_PROJECT_VERSION: "15"
     GENERATE_INFOPLIST_FILE: NO
 packages:
   OpenSSL:
     url: https://github.com/krzyzanowskim/OpenSSL
     exactVersion: 3.6.5000
   Zsign:
-    url: https://github.com/khcrysalis/Zsign-Package
-    revision: c4ba9da4283031c07efa03bce42c4b8602d22e73
+    path: Vendor/zsign
   ZIPFoundation:
     url: https://github.com/weichsel/ZIPFoundation
     from: 0.9.19

@@ -162,14 +162,6 @@
         "revision" : "22787ffb59de99e5dc1fbfe80b19c97a904ad48d",
         "version" : "0.9.20"
       }
-    },
-    {
-      "identity" : "zsign-package",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/khcrysalis/Zsign-Package",
-      "state" : {
-        "revision" : "c4ba9da4283031c07efa03bce42c4b8602d22e73"
-      }
     }
   ],
   "version" : 3

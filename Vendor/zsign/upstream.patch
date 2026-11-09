@@ -1,0 +1,25 @@
+--- a/Package.swift
++++ b/Package.swift
+@@ -33,8 +33,9 @@
+ 			],
+ 			path: ".",
+ 			exclude: [
+-				"src/common/archive.cpp",
+-				"src/zsign.cpp"
++				"LICENSE",
++				"LOCSIGN.md",
++				"upstream.patch"
+ 			],
+ 			sources: [
+ 				"src/archo.cpp",
+--- a/src/bundle.cpp
++++ b/src/bundle.cpp
+@@ -680,7 +680,7 @@
+ 
+ 	ZFile::RemoveFileV("%s/embedded.mobileprovision", m_strAppFolder.c_str());
+ 	if (!pSignAsset->m_strProvData.empty()) {
+-		if (bRemoveProvision) {
++		if (!bRemoveProvision) {
+ 			if (!ZFile::WriteFileV(pSignAsset->m_strProvData, "%s/embedded.mobileprovision", m_strAppFolder.c_str())) { // embedded.mobileprovision
+ 				ZLog::ErrorV(">>> Can't write embedded.mobileprovision!\n");
+ 				return false;
