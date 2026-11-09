@@ -3,6 +3,43 @@ import Darwin
 @testable import LocSign
 
 final class InstallCoordinatorTests: XCTestCase {
+    func testWirelessInstallationKeepsHeartbeatUntilCompleteAndClosesIt() async throws {
+        let fixture = try setup()
+        fixture.afc.requiresHeartbeat = true
+        try await run(fixture)
+        XCTAssertGreaterThanOrEqual(fixture.heartbeat.poloCount, 1)
+        XCTAssertTrue(fixture.heartbeat.closed)
+        XCTAssertEqual(fixture.installer.requests.compactMap { $0["Command"] as? String }, ["Install"])
+    }
+
+    func testHeartbeatFailuresStopBeforeUploadingOrSubmittingInstall() async throws {
+        for fault in ["start", "connect", "receive", "send"] {
+            let fixture = try setup()
+            switch fault {
+            case "start": fixture.lockdown.failAt = "com.apple.mobile.heartbeat"
+            case "connect": fixture.failOpeningPort = 3456
+            case "receive": fixture.heartbeat.failReceive = true
+            default: fixture.heartbeat.failSend = true
+            }
+            await expectFailure(fixture, stage: "设备保活")
+            XCTAssertTrue(fixture.afc.frames.isEmpty)
+            XCTAssertTrue(fixture.installer.requests.isEmpty)
+            XCTAssertTrue(fixture.lockdown.closed)
+            if fault == "receive" || fault == "send" { XCTAssertTrue(fixture.heartbeat.closed) }
+        }
+    }
+
+    func testInvalidHeartbeatChallengeNeverSubmitsInstall() async throws {
+        let fixture = try setup()
+        fixture.heartbeat.command = "Unexpected"
+        do { try await run(fixture); XCTFail("Invalid heartbeat accepted") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("设备保活")) }
+        XCTAssertEqual(fixture.heartbeat.poloCount, 0)
+        XCTAssertTrue(fixture.afc.frames.isEmpty)
+        XCTAssertTrue(fixture.installer.requests.isEmpty)
+        XCTAssertTrue(fixture.heartbeat.closed)
+    }
+
     func testSocketAdaptersPreserveOriginalConstructorErrors() async throws {
         let fixture = try setup()
         let pairing = try PairingRecord(data: fixture.pairing)
@@ -134,6 +171,7 @@ final class InstallCoordinatorTests: XCTestCase {
             },
             openService: { _, endpoint, _ in
                 if endpoint.port == fixture.failOpeningPort { throw installTLSFailure() }
+                if endpoint.port == 3456 { return fixture.heartbeat }
                 return endpoint.port == 1234 ? fixture.afc : fixture.installer
             })
         try await coordinator.install(ipaURL: fixture.ipa, host: "127.0.0.1", pairingData: fixture.pairing)
@@ -151,9 +189,13 @@ private final class InstallFixture {
     let lockdown = InstallLockdownFixture()
     let afc = InstallServiceFixture()
     let installer = InstallServiceFixture()
+    let heartbeat = InstallHeartbeatFixture()
     var failOpeningPort: UInt16?
     var failDeviceConnection = false
-    init(ipa: URL, pairing: Data) { self.ipa = ipa; self.pairing = pairing }
+    init(ipa: URL, pairing: Data) {
+        self.ipa = ipa; self.pairing = pairing
+        afc.heartbeatReady = { [heartbeat] in heartbeat.poloCount > 0 && !heartbeat.closed }
+    }
 }
 
 private final class InstallLockdownFixture: LockdownTransport {
@@ -168,6 +210,7 @@ private final class InstallLockdownFixture: LockdownTransport {
         case "QueryType": return ["Type": "com.apple.mobile.lockdown"]
         case "StartSession": return ["SessionID": "synthetic", "EnableSessionSSL": true]
         case "GetValue": return ["Value": "SYNTHETIC-UDID"]
+        case "com.apple.mobile.heartbeat": return ["Port": 3456, "EnableServiceSSL": true]
         case "com.apple.afc": return ["Port": 1234, "EnableServiceSSL": false]
         case "com.apple.mobile.installation_proxy": return ["Port": 5678, "EnableServiceSSL": true]
         default: throw LocSignError.install("Unexpected test request")
@@ -188,6 +231,8 @@ private final class InstallServiceFixture: DeviceServiceTransport {
     var frames: [AFCFrame] = []
     var requests: [[String: Any]] = []
     var responseCount = 0
+    var requiresHeartbeat = false
+    var heartbeatReady: () -> Bool = { true }
     func sendPlist(_ value: [String: Any]) async throws {
         requests.append(value)
         if failSend { throw installTLSFailure() }
@@ -199,6 +244,7 @@ private final class InstallServiceFixture: DeviceServiceTransport {
     }
     func exchangeAFC(_ frame: AFCFrame) async throws -> AFCFrame {
         frames.append(frame)
+        if requiresHeartbeat && !heartbeatReady() { throw installTLSFailure() }
         if frame.operation == failOperation { throw installTLSFailure() }
         if cancelWrite && frame.operation == .write { throw CancellationError() }
         if frame.operation == .fileOpen {
@@ -209,4 +255,57 @@ private final class InstallServiceFixture: DeviceServiceTransport {
             payload: Data(repeating: 0, count: 8), thisLength: nil)
     }
     func close() { closed = true }
+}
+
+private final class InstallHeartbeatFixture: DeviceServiceTransport {
+    var failReceive = false
+    var failSend = false
+    var command = "Marco"
+    private let lock = NSLock()
+    private var replies = 0
+    private var isClosed = false
+    private var first = true
+    private var waiting: CheckedContinuation<[String: Any], Error>?
+
+    var poloCount: Int { lock.lock(); defer { lock.unlock() }; return replies }
+    var closed: Bool { lock.lock(); defer { lock.unlock() }; return isClosed }
+
+    func sendPlist(_ value: [String: Any]) async throws {
+        if failSend { throw installTLSFailure() }
+        XCTAssertEqual(value["Command"] as? String, "Polo")
+        recordReply()
+    }
+
+    private func recordReply() { lock.lock(); defer { lock.unlock() }; replies += 1 }
+
+    func receivePlist() async throws -> [String: Any] {
+        if failReceive { throw installTLSFailure() }
+        return try await withCheckedThrowingContinuation { continuation in
+            lock.lock()
+            if isClosed {
+                lock.unlock()
+                continuation.resume(throwing: CancellationError())
+            } else if first {
+                first = false
+                lock.unlock()
+                continuation.resume(returning: ["Command": command, "Interval": 15])
+            } else {
+                waiting = continuation
+                lock.unlock()
+            }
+        }
+    }
+
+    func exchangeAFC(_ frame: AFCFrame) async throws -> AFCFrame {
+        throw LocSignError.install("AFC request sent to heartbeat service")
+    }
+
+    func close() {
+        lock.lock()
+        isClosed = true
+        let continuation = waiting
+        waiting = nil
+        lock.unlock()
+        continuation?.resume(throwing: CancellationError())
+    }
 }
