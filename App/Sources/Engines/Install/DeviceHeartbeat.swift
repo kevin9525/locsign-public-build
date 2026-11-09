@@ -9,6 +9,8 @@ final class DeviceHeartbeat {
     init(connection: any DeviceServiceTransport) { self.connection = connection }
 
     func start() async throws {
+        let connection = self.connection
+        let state = self.state
         do {
             try await withTaskCancellationHandler {
                 try await Self.respond(on: connection)
@@ -16,8 +18,6 @@ final class DeviceHeartbeat {
                 self.connection.close()
             }
             try Task.checkCancellation()
-            let connection = connection
-            let state = state
             pump = Task {
                 do {
                     while true { try await Self.respond(on: connection) }
