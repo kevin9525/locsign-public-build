@@ -1,6 +1,13 @@
 import Foundation
 
-final class DeviceServiceConnection {
+protocol DeviceServiceTransport: AnyObject {
+    func sendPlist(_ value: [String: Any]) async throws
+    func receivePlist() async throws -> [String: Any]
+    func exchangeAFC(_ frame: AFCFrame) async throws -> AFCFrame
+    func close()
+}
+
+final class DeviceServiceConnection: DeviceServiceTransport {
     private let queue = DispatchQueue(label: "com.locsign.device-service")
     private let socket: LSDeviceSocket
     private let encrypted: Bool

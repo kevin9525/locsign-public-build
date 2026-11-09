@@ -1,11 +1,11 @@
 import Foundation
 
 final class AFCClient {
-    private let connection: DeviceServiceConnection
+    private let connection: any DeviceServiceTransport
     private var packetNumber: UInt64 = 0
     private let operationLock = NSLock()
 
-    init(connection: DeviceServiceConnection) { self.connection = connection }
+    init(connection: any DeviceServiceTransport) { self.connection = connection }
 
     func makeDirectory(path: String) async throws {
         guard (path == "/PublicStaging" || path.hasPrefix("/PublicStaging/")), !path.contains("..") else {

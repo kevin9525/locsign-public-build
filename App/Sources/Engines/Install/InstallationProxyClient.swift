@@ -1,9 +1,9 @@
 import Foundation
 
 final class InstallationProxyClient {
-    private let connection: DeviceServiceConnection
+    private let connection: any DeviceServiceTransport
 
-    init(connection: DeviceServiceConnection) { self.connection = connection }
+    init(connection: any DeviceServiceTransport) { self.connection = connection }
 
     func install(packagePath: String, progress: @Sendable (Double) async -> Void) async throws {
         try await connection.sendPlist(InstallationProxyProtocol.installRequest(packagePath: packagePath))

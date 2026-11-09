@@ -6,6 +6,18 @@ protocol IPAInstalling {
 }
 
 final class InstallCoordinator: IPAInstalling {
+    private let makeTransport: (String) async throws -> any LockdownTransport
+    private let openService: (String, LockdownServiceEndpoint, PairingRecord) async throws -> any DeviceServiceTransport
+
+    init(makeTransport: @escaping (String) async throws -> any LockdownTransport = {
+        try await LockdownNetworkTransport(host: $0)
+    }, openService: @escaping (String, LockdownServiceEndpoint, PairingRecord) async throws -> any DeviceServiceTransport = {
+        try await DeviceServiceConnection(host: $0, endpoint: $1, pairing: $2)
+    }) {
+        self.makeTransport = makeTransport
+        self.openService = openService
+    }
+
     func install(ipaURL: URL, host: String, pairingData: Data,
                  progress: @Sendable (Double) async -> Void = { _ in }) async throws {
         guard ipaURL.isFileURL, FileManager.default.fileExists(atPath: ipaURL.path) else {
@@ -16,10 +28,10 @@ final class InstallCoordinator: IPAInstalling {
             throw LocSignError.install("待安装 IPA 为空")
         }
         let pairing = try PairingRecord(data: pairingData)
-        let transport = try await LockdownNetworkTransport(host: host)
+        let transport = try await makeTransport(host)
         let session = LockdownSession(transport: transport, pairing: pairing)
-        var afcConnection: DeviceServiceConnection?
-        var installConnection: DeviceServiceConnection?
+        var afcConnection: (any DeviceServiceTransport)?
+        var installConnection: (any DeviceServiceTransport)?
         var afcClient: AFCClient?
         let remoteDirectory = "/PublicStaging/LocSign-\(UUID().uuidString)"
         let remotePath = "\(remoteDirectory)/app.ipa"
@@ -29,8 +41,8 @@ final class InstallCoordinator: IPAInstalling {
             _ = try await session.queryUniqueDeviceID()
             let afcEndpoint = try await session.startService("com.apple.afc")
             let installationEndpoint = try await session.startService("com.apple.mobile.installation_proxy")
-            afcConnection = try await transport.openService(afcEndpoint, pairing: pairing)
-            installConnection = try await transport.openService(installationEndpoint, pairing: pairing)
+            afcConnection = try await openService(host, afcEndpoint, pairing)
+            installConnection = try await openService(host, installationEndpoint, pairing)
 
             guard let afcConnection, let installConnection else {
                 throw LocSignError.install("安装服务连接未建立")
