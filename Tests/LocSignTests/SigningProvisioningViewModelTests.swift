@@ -3,6 +3,16 @@ import XCTest
 
 final class SigningProvisioningViewModelTests: XCTestCase {
     @MainActor
+    func testSigningAutomaticallyAuthenticatesDeviceWithoutManualProbe() async throws {
+        let fixture = try await setup()
+        await fixture.model.provisionAndSign(using: fixture.engine, account: account,
+            teamID: "TEAM12345", providerAccepted: true)
+        XCTAssertEqual(fixture.model.verifiedDeviceUDID, "SYNTHETIC-UDID")
+        XCTAssertEqual(fixture.model.outputURL, fixture.signedIPA)
+        XCTAssertNil(fixture.model.error)
+    }
+
+    @MainActor
     func testOnlyExplicitPersonalModeSendsTheSelectedIdentifier() async throws {
         let fixture = try await setup()
         await fixture.model.verifyProvisioningDevice()

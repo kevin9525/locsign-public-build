@@ -3,6 +3,17 @@ import XCTest
 
 final class AppleIDProvisioningModelTests: XCTestCase {
     @MainActor
+    func testReloginKeepsSelectedTeamWhenStillAvailable() async {
+        let model = ready(AccountSheetEngineFixture(teams: [
+            .init(id: "FIRST", name: "First"), .init(id: "SECOND", name: "Second")]))
+        await model.logIn()
+        model.teamID = "SECOND"
+        model.password = "synthetic-password"
+        await model.logIn()
+        XCTAssertEqual(model.teamID, "SECOND")
+    }
+
+    @MainActor
     func testDisabledProviderRestoresCachedSigningAccountWithoutLogin() async {
         let engine = AccountSheetEngineFixture()
         let model = AppleIDProvisioningModel { _ in engine }

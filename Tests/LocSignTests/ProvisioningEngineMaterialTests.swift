@@ -4,6 +4,16 @@ import ZIPFoundation
 @testable import LocSign
 
 final class ProvisioningEngineMaterialTests: XCTestCase {
+    func testOtherApplicationIsCacheMissInsteadOfInvalidMaterial() async throws {
+        let fixture = try setup()
+        let account = try await fixture.engine.logIn(appleID: "user@example.com", password: "synthetic", twoFactorCode: { nil })
+        _ = try await fixture.engine.provision(request: .init(accountID: account.id, teamID: "TEAM12345",
+            ipaURL: fixture.ipa, deviceUDID: "SYNTHETIC-UDID"), confirmRevocation: { _ in false })
+        let cached = try await fixture.engine.cachedMaterial(request: .init(accountID: account.id, teamID: "TEAM12345",
+            ipaURL: try makeIPA(bundle: "com.other.app"), deviceUDID: "SYNTHETIC-UDID"))
+        XCTAssertNil(cached)
+    }
+
     func testSelectedIdentifierIsValidatedAndReusedOnlyForTheSameTarget() async throws {
         let fixture = try setup()
         let account = try await fixture.engine.logIn(appleID: "user@example.com", password: "synthetic", twoFactorCode: { nil })
