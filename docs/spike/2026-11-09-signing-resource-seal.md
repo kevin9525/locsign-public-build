@@ -58,6 +58,11 @@ snapshot. Three pre-existing public fixture/document/parser-test redactions
 remain intentionally different from the private repository.
 
 Device logs and signed artifacts contain private
-material and remain outside tracked/public source. A fresh device installation
-after re-signing remains the acceptance check; existing signed IPAs are not
-repaired by upgrading LocSign.
+material and remain outside tracked/public source. Existing signed IPAs are not
+repaired by upgrading LocSign and must be re-signed.
+
+On 2026-11-09, after delivery of 0.2.9 (15), the user reported successful
+installation and explicitly confirmed that Feather opens normally. This accepts
+the reported Feather signing/upload/install/launch flow on the device. This
+result is user-reported, without a new log capture, and does not establish
+compatibility for all IPAs or the source of previously recovered signing material.
