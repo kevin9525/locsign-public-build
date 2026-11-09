@@ -2,11 +2,11 @@
 
 iOS 18 签名与定位工具的开发中项目，参考 NB 助手的核心使用流程。
 
-当前版本 **0.2.7 / build 13** 为安装诊断版：针对“配对服务检查通过、安装时 TLS 接收失败（-9806）”，错误会注明配对认证、启动/连接服务、上传 IPA、发送安装请求或等待结果等具体步骤，并保留原错误码和底层错误。失败后保留当前签名产物，不自动重放安装请求。此次不改变 TLS 证书校验和服务启动顺序；真机断开的根因尚未确认。详见[安装 TLS 诊断](docs/spike/2026-11-09-install-tls-diagnostics.md)。
+当前版本 **0.2.8 / build 14** 针对“准备上传目录失败：TLS 接收失败（-9806）”补上网络安装所需的设备心跳。开始文件操作前完成首次心跳应答，安装过程中持续保活，结束时关闭连接；已知心跳失败会阻止提交安装请求。保持原 TLS 证书校验、签名材料和服务顺序，不自动重连或重放 Install。详细对照证据见[安装心跳修复](docs/spike/2026-11-09-install-heartbeat.md)，前一版的步骤诊断继续保留。
 
 继续保留 0.2.6 的 C03 证书内容恢复、PEM/DER/Base64 支持、C01–C09 诊断、可选个人签名标识、Apple ID 登录、材料复用、手动导入和签名导出。申请结果不确定时保存私钥，重试只查询匹配证书，不重复提交 CSR；只有明确的申请拒绝才允许再次申请。查询不到匹配证书时会停止，不保证恢复成功。个人标识在同一团队与原 App 下固定，新标识作为独立应用安装。证书撤销必须确认精确列表；不会自动删除 profile 或修改 capability。详见[缺失证书内容恢复](docs/spike/2026-11-07-missing-certificate-content.md)。
 
-自动申请当前接受无扩展/嵌套 App、未加密的单一 arm64 IPA；FAT 主程序、DER entitlement 与额外 capability 暂不支持。0.2.7 的 243 项 XCTest、4 项打包测试、模拟器/设备构建及 IPA 打包已通过[CI](https://github.com/kevin9525/locsign-public-build/actions/runs/42553449272)，最终 IPA 的版本、原应用标识、必需资源及 CRC 已核验。Apple ID 登录及配对已由用户确认成功；最新反馈是 0.2.6 的安装失败。尚未确认该签名产物使用的材料来源，因此不据此认定 C03 恢复已通过真机验收。材料申请、签名、安装及启动结果分别记录在[真机验收](docs/apple-id-acceptance.md)。全局定位仍未接入。
+自动申请当前接受无扩展/嵌套 App、未加密的单一 arm64 IPA；FAT 主程序、DER entitlement 与额外 capability 暂不支持。0.2.8 的 250 项 XCTest、4 项打包测试、模拟器/设备构建和 IPA 打包已通过[CI](https://github.com/kevin9525/locsign-public-build/actions/runs/42563213794)，最终 IPA 的版本、原应用标识、必需资源和 CRC 已核验。当前手机网络服务的对照探测已确认：缺少心跳会在首次 AFC 请求断开，持续心跳后读取、创建/删除专用测试目录和安装服务查询成功；探测未上传或安装 IPA。完整的 LocSign + LocalDevVPN 安装和启动仍待[真机验收](docs/apple-id-acceptance.md)。Apple ID 登录及配对已由用户确认成功；C03 恢复是否成功需按实际签名材料来源单独确认。全局定位仍未接入。
 
 Anisette 默认地址为 `https://mac-ani.jkcoxson.com`。使用前需同意 UUID、ADI 握手消息/ADI blob 和来源 IP 披露；可换地址或关闭；已有材料可在重新校验后本机签名，无需访问提供方或 Apple。密码仅用于本次 Apple 登录，会话和私钥保存到本机专用 Keychain。覆盖更新保留资料；明确退出清除该账号资料和当前自动签名产物。
 
@@ -41,7 +41,7 @@ python -m unittest discover -s Tests/BuildTools -v
 
 ### 没有签名证书时
 
-1. 用 Sideloadly 为未签名的 0.2.7 IPA 签名并安装；更新现有 LocSign 时使用原来的 Apple ID 和 Bundle ID。覆盖更新以保留待恢复私钥，不先卸载或退出清除。更新前先用“保存或分享 IPA”导出当前签名文件；签名页的产物入口不会跨重启保留。
+1. 用 Sideloadly 为未签名的 0.2.8 IPA 签名并安装；更新现有 LocSign 时使用原来的 Apple ID 和 Bundle ID。覆盖更新以保留待恢复私钥，不先卸载或退出清除。更新前先用“保存或分享 IPA”导出当前签名文件；签名页的产物入口不会跨重启保留。
 2. 开启 LocalDevVPN，在 LocSign 的“连接”页面保留默认设备地址 `10.7.0.1`，点“检测连接”。其他隧道请填写实际设备 IP，不填写网址或域名。
 3. 选择**这台手机**的电脑配对 plist，然后点“验证配对与安装服务”。已通过 USB 放入 LocSign 文档目录的文件可从“我的 iPhone → LocSign”选择。
 4. 成功结果会显示配对身份认证、文件传输服务连接、安装服务连接均通过。此检查不上传 IPA、不执行安装，无需 P12、mobileprovision 或 Apple ID 登录。
