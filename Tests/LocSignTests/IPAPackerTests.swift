@@ -1,5 +1,6 @@
 import XCTest
 import ZIPFoundation
+import CryptoKit
 @testable import LocSign
 
 /// iOS 模拟器测试环境无 Process（NSTask 为 macOS 专属）：
@@ -31,6 +32,7 @@ final class IPAPackerTests: XCTestCase {
             let info = try XCTUnwrap(PlistCodec.decode(Data(contentsOf: signed.appendingPathComponent("Info.plist"))) as? [String: Any])
             XCTAssertEqual(info["CFBundleIdentifier"] as? String, "com.test.app")
             XCTAssertEqual(try Data(contentsOf: signed.appendingPathComponent("embedded.mobileprovision")), raw)
+            try assertProfileSealed(in: signed, executable: "Demo", profile: raw)
             XCTAssertTrue(SigningEngine.shared.isSigned(signed.appendingPathComponent("Demo").path))
             let claims = try signedEntitlements(Data(contentsOf: signed.appendingPathComponent("Demo")))
             XCTAssertEqual(claims["application-identifier"] as? String, "PREFIX1234.com.test.app")
@@ -42,6 +44,56 @@ final class IPAPackerTests: XCTestCase {
     private func fixture(_ name: String, _ ext: String) throws -> URL {
         try XCTUnwrap(Bundle(for: IPAPackerTests.self).url(forResource: name, withExtension: ext),
                       "fixture \(name).\(ext) 缺失")
+    }
+
+    // Verify the output resource seal, not just the presence of a signature.
+    // A post-sign profile write used to leave this file outside CodeResources.
+    private func assertProfileSealed(in app: URL, executable: String, profile: Data) throws {
+        let resources = try Data(contentsOf: app.appendingPathComponent("_CodeSignature/CodeResources"))
+        let manifest = try XCTUnwrap(PlistCodec.decode(resources) as? [String: Any])
+        let files = try XCTUnwrap(manifest["files"] as? [String: Any])
+        let files2 = try XCTUnwrap(manifest["files2"] as? [String: Any])
+        let profileSeal = try XCTUnwrap(files2["embedded.mobileprovision"] as? [String: Any],
+                                       "The packaged profile must be part of the resource seal")
+        XCTAssertEqual(files["embedded.mobileprovision"] as? Data, Data(Insecure.SHA1.hash(data: profile)))
+        XCTAssertEqual(profileSeal["hash"] as? Data, Data(Insecure.SHA1.hash(data: profile)))
+        XCTAssertEqual(profileSeal["hash2"] as? Data, Data(SHA256.hash(data: profile)))
+
+        // CodeResources must also be sealed by the Mach-O's CodeDirectories;
+        // editing the manifest after signing would satisfy only the checks above.
+        let binary = try Data(contentsOf: app.appendingPathComponent(executable))
+        func word(_ offset: Int, big: Bool = false) throws -> Int {
+            guard offset >= 0, offset <= binary.count - 4 else { throw NSError(domain: "ResourceSeal", code: 1) }
+            let bytes = Array(binary[offset..<(offset + 4)])
+            return (big ? bytes : Array(bytes.reversed())).reduce(0) { ($0 << 8) | Int($1) }
+        }
+        var cursor = 32
+        var checked = 0
+        for _ in 0..<(try word(16)) {
+            if try word(cursor) == 0x1d {
+                let signature = try word(cursor + 8)
+                for index in 0..<(try word(signature + 8, big: true)) {
+                    let entry = signature + 12 + index * 8
+                    let slot = try word(entry, big: true)
+                    guard slot == 0 || slot == 0x1000 else { continue }
+                    let directory = signature + (try word(entry + 4, big: true))
+                    XCTAssertEqual(try word(directory, big: true), 0xfade0c02)
+                    XCTAssertGreaterThanOrEqual(try word(directory + 24, big: true), 3)
+                    guard directory + 38 <= binary.count else { throw NSError(domain: "ResourceSeal", code: 2) }
+                    let size = Int(binary[directory + 36])
+                    let type = binary[directory + 37]
+                    let expected = type == 1 ? Data(Insecure.SHA1.hash(data: resources)) : Data(SHA256.hash(data: resources))
+                    XCTAssertTrue(type == 1 || type == 2)
+                    XCTAssertEqual(size, expected.count)
+                    let offset = directory + (try word(directory + 16, big: true)) - 3 * size
+                    guard offset >= directory, size > 0, offset <= binary.count - size else { throw NSError(domain: "ResourceSeal", code: 3) }
+                    XCTAssertEqual(Data(binary[offset..<(offset + size)]), expected)
+                    checked += 1
+                }
+            }
+            cursor += try word(cursor + 4)
+        }
+        XCTAssertEqual(checked, 2, "Both SHA-1 and SHA-256 CodeDirectories must seal the manifest")
     }
 
     // Inspect the actual LC_CODE_SIGNATURE entitlement slot from the signed
@@ -87,7 +139,8 @@ final class IPAPackerTests: XCTestCase {
         try FileManager.default.copyItem(at: hostBin, to: appDir.appendingPathComponent("Demo"))
         let infoPlist = try PlistCodec.encodeXML(["CFBundleIdentifier": "com.test.app", "CFBundleExecutable": "Demo"])
         try infoPlist.write(to: appDir.appendingPathComponent("Info.plist"))
-        try profileRaw.write(to: appDir.appendingPathComponent("embedded.mobileprovision"))
+        // Re-signing must replace and seal the selected profile, not a stale one.
+        try Data("stale source profile".utf8).write(to: appDir.appendingPathComponent("embedded.mobileprovision"))
         let zip = tmp.appendingPathComponent("demo.ipa")
         try IPAPacker.makeZip(fromDirectory: tmp.appendingPathComponent("Payload"), to: zip)
 
@@ -119,6 +172,7 @@ final class IPAPackerTests: XCTestCase {
         XCTAssertTrue(SigningEngine.shared.isSigned(demo.path), "zsign checkSigned 未识别签名")
         let embedded = try Data(contentsOf: checkDir.appendingPathComponent("Payload/Demo.app/embedded.mobileprovision"))
         XCTAssertEqual(embedded, profileRaw)
+        try assertProfileSealed(in: checkDir.appendingPathComponent("Payload/Demo.app"), executable: "Demo", profile: profileRaw)
     }
 
     func testMalformedIPAIsRejectedWithoutAnOutput() async throws {
