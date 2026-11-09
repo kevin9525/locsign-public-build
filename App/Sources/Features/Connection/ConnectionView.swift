@@ -15,7 +15,7 @@ struct ConnectionView: View {
                 Section {
                     Label("连接并验证这台手机", systemImage: "cable.connector")
                         .font(.headline)
-                    Text("开启本地 VPN 后，先检测连接，再导入电脑生成的配对文件验证身份。")
+                    Text("这里用于排查连接问题。一键安装会自动验证设备，无需每次先来检测。配对文件与安装页共用。")
                         .foregroundStyle(.secondary)
                 }
                 Section {
@@ -23,7 +23,7 @@ struct ConnectionView: View {
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                         .disabled(task != nil || model.deviceBusy)
                     Button("检测连接") { start(pairing: false) }
-                        .disabled(task != nil || model.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(task != nil || model.deviceBusy || model.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 } header: {
                     Text("设备地址")
                 } footer: {

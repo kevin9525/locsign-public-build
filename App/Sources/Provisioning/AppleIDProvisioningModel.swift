@@ -44,9 +44,12 @@ final class AppleIDProvisioningModel: ObservableObject {
         self.settings = settings
         self.factory = factory ?? { try ProvisioningEngineLive.live(configuration: $0) }
         if let defaults = settings?.defaults {
-            endpoint = defaults.string(forKey: "install.provider") ?? endpoint
-            providerEnabled = defaults.object(forKey: "install.providerEnabled") as? Bool ?? true
-            providerAccepted = defaults.string(forKey: "install.acceptedProvider") == endpoint
+            let savedEndpoint = defaults.string(forKey: "install.provider") ?? endpoint
+            // Restore wrappers directly: assigning endpoint here would run its
+            // edit observer and erase consent before it can be read.
+            _endpoint = Published(initialValue: savedEndpoint)
+            _providerEnabled = Published(initialValue: defaults.object(forKey: "install.providerEnabled") as? Bool ?? true)
+            _providerAccepted = Published(initialValue: defaults.string(forKey: "install.acceptedProvider") == savedEndpoint)
         }
     }
     var engine: (any ProvisioningEngine)? { currentEngine }

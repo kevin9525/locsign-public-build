@@ -35,6 +35,9 @@ struct SigningView: View {
                 if model.isImporting || model.isPreparingIdentifier {
                     Section { HStack { ProgressView(); Text(model.isImporting ? "正在导入 IPA…" : "正在读取应用设置…") } }
                 }
+                if model.isSigning {
+                    Section { HStack { ProgressView(); Text("正在签名 IPA…") } }
+                }
                 if operation != nil {
                     Section("安装进度") {
                         HStack { ProgressView(); Text(model.stage.isEmpty ? "正在准备…" : model.stage) }

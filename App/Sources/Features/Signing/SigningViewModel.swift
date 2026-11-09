@@ -34,7 +34,10 @@ final class SigningViewModel: ObservableObject {
     @Published var deviceHost = "10.7.0.1" {
         didSet {
             if deviceHost != oldValue {
-                if !syncingSettings, let settings, settings.host != deviceHost { settings.host = deviceHost; deviceHost = settings.host }
+                if !syncingSettings, let settings, settings.host != deviceHost {
+                    if settings.operationID != nil { deviceHost = oldValue; return }
+                    settings.updateHost(deviceHost)
+                }
                 installSucceeded = false
                 verifiedDeviceUDID = nil
                 generation = UUID()
@@ -118,6 +121,8 @@ final class SigningViewModel: ObservableObject {
         guard let pairingData else { error = "请先导入这台手机的配对文件"; return }
         let host = deviceHost.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty else { error = "请输入手机本地 VPN 的设备地址"; return }
+        let lock = settings?.beginOperation()
+        defer { if let lock { settings?.endOperation(lock) } }
         generation = UUID()
         let operation = generation
         isProvisioning = true
@@ -245,7 +250,7 @@ final class SigningViewModel: ObservableObject {
         } catch {
             if generation == operation {
                 if error as? ProvisioningError == .invalidAccount { needsAccountSetup = true }
-                self.error = safeMessage(error)
+                self.error = stage.replacingOccurrences(of: "…", with: "") + "：" + safeMessage(error)
                 stage = error is CancellationError ? "已取消" : "操作未完成"
             }
         }
@@ -389,12 +394,14 @@ final class SigningViewModel: ObservableObject {
         generation = UUID()
         let operation = generation
         isInstalling = true
+        stage = "正在上传并安装…"
         installProgress = 0
         installSucceeded = false
         error = nil
         defer { isInstalling = false; if let lock { settings?.endOperation(lock) } }
         do {
             try await upload(outputURL, host: host, pairing: pairingData, operation: operation)
+            stage = "安装完成"
         } catch { if generation == operation { self.error = safeMessage(error) } }
     }
 

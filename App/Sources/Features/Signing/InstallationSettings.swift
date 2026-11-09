@@ -16,12 +16,7 @@ final class InstallationSettings: ObservableObject {
     @Published private(set) var pairing: SavedPairing?
     @Published private(set) var loadError: String?
     @Published private(set) var operationID: UUID?
-    @Published var host: String {
-        didSet {
-            if operationID != nil { host = oldValue; return }
-            defaults.set(host, forKey: "install.host")
-        }
-    }
+    @Published private(set) var host: String
     let defaults: UserDefaults
     private let directory: URL
     private var pairingURL: URL { directory.appendingPathComponent("pairing.json") }
@@ -42,6 +37,12 @@ final class InstallationSettings: ObservableObject {
     static func live() -> InstallationSettings {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return InstallationSettings(directory: root.appendingPathComponent("Installation", isDirectory: true))
+    }
+
+    func updateHost(_ value: String) {
+        guard operationID == nil, host != value else { return }
+        host = value
+        defaults.set(value, forKey: "install.host")
     }
 
     func savePairing(data: Data, name: String) throws {

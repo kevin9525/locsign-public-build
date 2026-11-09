@@ -6,7 +6,10 @@ final class ConnectionViewModel: ObservableObject {
     @Published var host = "10.7.0.1" {
         didSet {
             if host != oldValue {
-                if !syncingSettings, let settings, settings.host != host { settings.host = host; host = settings.host }
+                if !syncingSettings, let settings, settings.host != host {
+                    if settings.operationID != nil { host = oldValue; return }
+                    settings.updateHost(host)
+                }
                 clearResult()
             }
         }

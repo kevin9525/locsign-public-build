@@ -58,6 +58,9 @@ final class InstallationSettingsTests: XCTestCase {
         XCTAssertNil(settings.beginOperation())
         XCTAssertFalse(connection.canCheckPairing)
         XCTAssertThrowsError(try settings.clearPairing())
+        connection.host = "10.7.0.99"
+        XCTAssertEqual(connection.host, "10.7.0.1")
+        XCTAssertEqual(settings.host, "10.7.0.1")
         await connection.checkPairing()
         settings.endOperation(token)
         XCTAssertTrue(connection.canCheckPairing)

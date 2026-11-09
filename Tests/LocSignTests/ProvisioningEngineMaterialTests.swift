@@ -4,6 +4,21 @@ import ZIPFoundation
 @testable import LocSign
 
 final class ProvisioningEngineMaterialTests: XCTestCase {
+    func testCorruptCachedProfileRemainsAnErrorInsteadOfAutomaticRenewal() async throws {
+        let fixture = try setup()
+        let account = try await fixture.engine.logIn(appleID: "user@example.com", password: "synthetic", twoFactorCode: { nil })
+        let request = ProvisioningRequest(accountID: account.id, teamID: "TEAM12345", ipaURL: fixture.ipa, deviceUDID: "SYNTHETIC-UDID")
+        _ = try await fixture.engine.provision(request: request, confirmRevocation: { _ in false })
+        let active = try XCTUnwrap(fixture.keychain.read(account: account.appleID, provider: "signing-material-v1", team: request.teamID, key: "active"))
+        var row = try XCTUnwrap(JSONSerialization.jsonObject(with: active) as? [String: Any])
+        var material = try XCTUnwrap(row["material"] as? [String: Any])
+        material["profileData"] = try data("profile-tampered", "mobileprovision").base64EncodedString()
+        row["material"] = material
+        try fixture.keychain.write(JSONSerialization.data(withJSONObject: row), account: account.appleID, provider: "signing-material-v1", team: request.teamID, key: "active")
+        do { _ = try await fixture.engine.cachedMaterial(request: request); XCTFail("Tampered cache ignored") }
+        catch { XCTAssertEqual(error as? ProfileValidationError, .cms) }
+    }
+
     func testOtherApplicationIsCacheMissInsteadOfInvalidMaterial() async throws {
         let fixture = try setup()
         let account = try await fixture.engine.logIn(appleID: "user@example.com", password: "synthetic", twoFactorCode: { nil })

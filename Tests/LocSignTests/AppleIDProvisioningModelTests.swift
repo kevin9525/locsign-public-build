@@ -3,6 +3,28 @@ import XCTest
 
 final class AppleIDProvisioningModelTests: XCTestCase {
     @MainActor
+    func testRelaunchRestoresAvailableTeamButNeverSelectsTeamFromAnotherAccount() async throws {
+        let id = UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: id))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(id)
+        addTeardownBlock { defaults.removePersistentDomain(forName: id); try? FileManager.default.removeItem(at: root) }
+        let teams: [ProvisioningTeam] = [.init(id: "FIRST", name: "First"), .init(id: "SECOND", name: "Second")]
+        let engine = AccountSheetEngineFixture(teams: teams)
+        let first = AppleIDProvisioningModel(settings: InstallationSettings(directory: root, defaults: defaults)) { _ in engine }
+        first.providerAccepted = true
+        first.appleID = "user@example.com"; first.password = "synthetic"
+        await first.logIn()
+        first.teamID = "SECOND"
+        let next = AppleIDProvisioningModel(settings: InstallationSettings(directory: root, defaults: defaults)) { _ in engine }
+        next.appleID = "user@example.com"; next.password = "synthetic"
+        await next.logIn()
+        XCTAssertEqual(next.teamID, "SECOND")
+        next.appleID = "other@example.com"; next.password = "synthetic"
+        await next.logIn()
+        XCTAssertTrue(next.teamID.isEmpty)
+    }
+
+    @MainActor
     func testReloginKeepsSelectedTeamWhenStillAvailable() async {
         let model = ready(AccountSheetEngineFixture(teams: [
             .init(id: "FIRST", name: "First"), .init(id: "SECOND", name: "Second")]))
