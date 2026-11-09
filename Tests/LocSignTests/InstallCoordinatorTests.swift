@@ -364,7 +364,7 @@ private final class InstallHeartbeatFixture: DeviceServiceTransport {
     }
 
     func challenge() async throws {
-        try await withCheckedThrowingContinuation { continuation in
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             lock.lock()
             if isClosed {
                 lock.unlock()
@@ -398,7 +398,7 @@ private final class InstallHeartbeatFixture: DeviceServiceTransport {
     }
 
     func waitUntilClosed() async throws {
-        try await withCheckedThrowingContinuation { continuation in
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             lock.lock()
             if isClosed { lock.unlock(); continuation.resume(); return }
             let id = UUID()
