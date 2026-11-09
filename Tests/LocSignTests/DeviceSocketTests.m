@@ -69,6 +69,11 @@ static OSStatus LSTestWrite(SSLConnectionRef connection, const void *data, size_
                            root:@"pairing-host-cert" expectedSuccess:YES];
 }
 
+- (void)testTLSReadCanBeInterruptedBeforeItsTimeoutAndClosedTwice {
+    [self runTLSRoundTripWithPeer:@"pairing-host-cert" key:@"pairing-host-key"
+                           root:@"pairing-host-cert" expectedSuccess:YES interruptWaitingRead:YES];
+}
+
 - (void)testTLSRejectsUntrustedPeer {
     [self runTLSRoundTripWithPeer:@"pairing-host-cert" key:@"pairing-host-key"
                            root:@"unrelated-root" expectedSuccess:NO];
@@ -136,6 +141,13 @@ static OSStatus LSTestWrite(SSLConnectionRef connection, const void *data, size_
 
 - (void)runTLSRoundTripWithPeer:(NSString *)peerName key:(NSString *)keyName
                           root:(NSString *)rootName expectedSuccess:(BOOL)expectedSuccess {
+    [self runTLSRoundTripWithPeer:peerName key:keyName root:rootName
+                 expectedSuccess:expectedSuccess interruptWaitingRead:NO];
+}
+
+- (void)runTLSRoundTripWithPeer:(NSString *)peerName key:(NSString *)keyName
+                          root:(NSString *)rootName expectedSuccess:(BOOL)expectedSuccess
+          interruptWaitingRead:(BOOL)interruptWaitingRead {
     NSBundle *bundle = [NSBundle bundleForClass:self.class];
     NSData *certificateData = [NSData dataWithContentsOfURL:[bundle URLForResource:peerName withExtension:@"der"]];
     NSData *keyData = [NSData dataWithContentsOfURL:[bundle URLForResource:keyName withExtension:@"der"]];
@@ -151,6 +163,7 @@ static OSStatus LSTestWrite(SSLConnectionRef connection, const void *data, size_
     if (listener < 0) { CFRelease(identity); CFRelease(certificate); return; }
 
     XCTestExpectation *finished = [self expectationWithDescription:@"TLS test peer closed"];
+    dispatch_semaphore_t peerWaiting = dispatch_semaphore_create(0);
     NSArray *chain = @[(__bridge id)identity];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         int fd = accept(listener, NULL, NULL);
@@ -175,7 +188,13 @@ static OSStatus LSTestWrite(SSLConnectionRef connection, const void *data, size_
             size_t processed = 0;
             status = SSLRead(tls, request, sizeof(request), &processed);
             if (status == noErr && processed == 4 && memcmp(request, "ping", 4) == 0) {
-                SSLWrite(tls, "pong", 4, &processed);
+                if (interruptWaitingRead) {
+                    dispatch_semaphore_signal(peerWaiting);
+                    char unused;
+                    recv(fd, &unused, 1, 0); // Keep TLS open without producing a reply.
+                } else {
+                    SSLWrite(tls, "pong", 4, &processed);
+                }
             }
         }
         CFRelease(tls);
@@ -195,7 +214,23 @@ static OSStatus LSTestWrite(SSLConnectionRef connection, const void *data, size_
         XCTAssertTrue(established, @"%@", error);
         if (established) {
             XCTAssertTrue([client sendTLSData:[@"ping" dataUsingEncoding:NSUTF8StringEncoding] error:&error]);
-            XCTAssertEqualObjects([client readTLSLength:4 error:&error], [@"pong" dataUsingEncoding:NSUTF8StringEncoding]);
+            if (interruptWaitingRead) {
+                XCTAssertEqual(dispatch_semaphore_wait(peerWaiting,
+                    dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC)), 0);
+                XCTestExpectation *interrupted = [self expectationWithDescription:@"socket shutdown issued"];
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 10),
+                    dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                        [client interrupt];
+                        [interrupted fulfill];
+                    });
+                NSTimeInterval started = NSProcessInfo.processInfo.systemUptime;
+                XCTAssertNil([client readTLSLength:4 error:&error]);
+                XCTAssertNotNil(error);
+                XCTAssertLessThan(NSProcessInfo.processInfo.systemUptime - started, 2);
+                [self waitForExpectations:@[interrupted] timeout:2];
+            } else {
+                XCTAssertEqualObjects([client readTLSLength:4 error:&error], [@"pong" dataUsingEncoding:NSUTF8StringEncoding]);
+            }
         }
     } else {
         XCTAssertFalse(established);
@@ -221,6 +256,7 @@ static OSStatus LSTestWrite(SSLConnectionRef connection, const void *data, size_
         }
     }
     [client close];
+    if (interruptWaitingRead) [client close];
     [self waitForExpectations:@[finished] timeout:8];
     CFRelease(identity);
     CFRelease(certificate);

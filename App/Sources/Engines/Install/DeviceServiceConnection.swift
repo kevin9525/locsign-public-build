@@ -54,7 +54,13 @@ final class DeviceServiceConnection: DeviceServiceTransport {
         }
     }
 
-    func close() { queue.async { self.socket.close() } }
+    func close() {
+        dispatchPrecondition(condition: .notOnQueue(queue))
+        socket.interrupt()
+        // Only shutdown runs concurrently with I/O. SecureTransport teardown
+        // stays on the same serial queue as SSLRead/SSLWrite.
+        queue.sync { socket.close() }
+    }
 
     private func send(_ data: Data) throws {
         if encrypted { try socket.sendTLSData(data) }

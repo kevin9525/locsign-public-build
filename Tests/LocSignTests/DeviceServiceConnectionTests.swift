@@ -43,7 +43,10 @@ final class DeviceServiceConnectionTests: XCTestCase {
         await fulfillment(of: [started], timeout: 2)
         // Let the receive reach the serial socket queue before closing it.
         try await Task.sleep(nanoseconds: 100_000_000)
+        let closingStarted = ProcessInfo.processInfo.systemUptime
         connection.close()
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - closingStarted, 2,
+                          "Close itself must not wait for the five-second read timeout")
         await fulfillment(of: [returned], timeout: 1)
         await receiving.value
     }

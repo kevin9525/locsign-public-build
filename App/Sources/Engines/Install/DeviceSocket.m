@@ -298,6 +298,12 @@ static OSStatus LSWriteCallback(SSLConnectionRef connection, const void *data, s
     return result;
 }
 
+- (void)interrupt {
+    @synchronized (self) {
+        if (self.socketFD >= 0) shutdown(self.socketFD, SHUT_RDWR);
+    }
+}
+
 - (void)close {
     if (self.tlsContext) {
         self.operationDeadline = NSProcessInfo.processInfo.systemUptime + MIN(self.timeout, 0.1);
@@ -305,10 +311,14 @@ static OSStatus LSWriteCallback(SSLConnectionRef connection, const void *data, s
         CFRelease(self.tlsContext);
         self.tlsContext = NULL;
     }
-    if (self.socketFD >= 0) {
-        shutdown(self.socketFD, SHUT_RDWR);
-        close(self.socketFD);
-        self.socketFD = -1;
+    // Serialize descriptor release with interrupt to prevent shutting down an
+    // unrelated socket if the OS reuses this descriptor after close.
+    @synchronized (self) {
+        if (self.socketFD >= 0) {
+            shutdown(self.socketFD, SHUT_RDWR);
+            close(self.socketFD);
+            self.socketFD = -1;
+        }
     }
 }
 

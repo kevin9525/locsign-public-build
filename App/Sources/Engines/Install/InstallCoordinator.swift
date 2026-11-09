@@ -22,6 +22,7 @@ final class InstallCoordinator: IPAInstalling {
                  progress: @Sendable (Double) async -> Void = { _ in }) async throws {
         var stage = InstallationStep.readPackage
         var session: LockdownSession?
+        var heartbeat: DeviceHeartbeat?
         var afcConnection: (any DeviceServiceTransport)?
         var installConnection: (any DeviceServiceTransport)?
         var afcClient: AFCClient?
@@ -44,6 +45,15 @@ final class InstallCoordinator: IPAInstalling {
             try await activeSession.start()
             stage = .readDevice
             _ = try await activeSession.queryUniqueDeviceID()
+            stage = .startHeartbeat
+            let heartbeatEndpoint = try await activeSession.startService("com.apple.mobile.heartbeat")
+            stage = .connectHeartbeat
+            let heartbeatConnection = try await openService(host, heartbeatEndpoint, pairing)
+            let activeHeartbeat = DeviceHeartbeat(connection: heartbeatConnection)
+            heartbeat = activeHeartbeat
+            stage = .heartbeat
+            try await activeHeartbeat.start()
+            try activeHeartbeat.check()
             stage = .startAFC
             let afcEndpoint = try await activeSession.startService("com.apple.afc")
             stage = .startInstaller
@@ -58,6 +68,7 @@ final class InstallCoordinator: IPAInstalling {
             }
             let afc = AFCClient(connection: afcConnection)
             afcClient = afc
+            try activeHeartbeat.check()
             stage = .prepareUpload
             try await afc.makeDirectory(path: "/PublicStaging")
             try await afc.makeDirectory(path: remoteDirectory)
@@ -66,6 +77,7 @@ final class InstallCoordinator: IPAInstalling {
                 await progress(min(0.35, value * 0.35))
             }
             await progress(0.35)
+            try activeHeartbeat.check()
             let installer = InstallationProxyClient(connection: installConnection)
             stage = .sendInstall
             try await installer.install(packagePath: remotePath) { value in
@@ -76,6 +88,7 @@ final class InstallCoordinator: IPAInstalling {
             try? await afc.removePath(remoteDirectory)
             installConnection.close()
             afcConnection.close()
+            await activeHeartbeat.stop()
             activeSession.close()
         } catch {
             let failure = InstallationFailure.wrapping(error, at: stage)
@@ -85,6 +98,7 @@ final class InstallCoordinator: IPAInstalling {
             }
             installConnection?.close()
             afcConnection?.close()
+            await heartbeat?.stop()
             session?.close()
             throw failure
         }
