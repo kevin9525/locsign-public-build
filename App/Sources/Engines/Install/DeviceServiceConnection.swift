@@ -14,12 +14,8 @@ final class DeviceServiceConnection: DeviceServiceTransport {
 
     init(host: String, endpoint: LockdownServiceEndpoint, pairing: PairingRecord,
          timeout: TimeInterval = 30) async throws {
-        do {
-            socket = try await Self.openSocket(host: host, endpoint: endpoint, pairing: pairing, timeout: timeout)
-            encrypted = endpoint.enableSSL
-        } catch {
-            throw LocSignError.install(error.localizedDescription)
-        }
+        socket = try await Self.openSocket(host: host, endpoint: endpoint, pairing: pairing, timeout: timeout)
+        encrypted = endpoint.enableSSL
     }
 
     func sendPlist(_ value: [String: Any]) async throws {

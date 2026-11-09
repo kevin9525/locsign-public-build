@@ -9,11 +9,7 @@ final class LockdownNetworkTransport: LockdownTransport {
     init(host: String, port: UInt16 = 62078, timeout: TimeInterval = 8) async throws {
         guard !host.isEmpty, port > 0 else { throw LocSignError.install("设备地址无效") }
         self.host = host
-        do {
-            socket = try await Self.openSocket(host: host, port: port, timeout: timeout)
-        } catch {
-            throw LocSignError.install(error.localizedDescription)
-        }
+        socket = try await Self.openSocket(host: host, port: port, timeout: timeout)
     }
 
     func send(_ request: [String: Any]) async throws {

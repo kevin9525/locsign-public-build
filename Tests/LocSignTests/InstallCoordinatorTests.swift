@@ -1,7 +1,46 @@
 import XCTest
+import Darwin
 @testable import LocSign
 
 final class InstallCoordinatorTests: XCTestCase {
+    func testSocketAdaptersPreserveOriginalConstructorErrors() async throws {
+        let fixture = try setup()
+        let pairing = try PairingRecord(data: fixture.pairing)
+        do {
+            _ = try await LockdownNetworkTransport(host: "127.0.0.1", timeout: 0)
+            XCTFail("Invalid timeout accepted")
+        } catch {
+            XCTAssertEqual((error as NSError).domain, "LocSign.DeviceSocket")
+            XCTAssertEqual((error as NSError).code, Int(EINVAL))
+        }
+        do {
+            _ = try await DeviceServiceConnection(host: "127.0.0.1",
+                endpoint: .init(port: 1234, enableSSL: true), pairing: pairing, timeout: 0)
+            XCTFail("Invalid timeout accepted")
+        } catch {
+            XCTAssertEqual((error as NSError).domain, "LocSign.DeviceSocket")
+            XCTAssertEqual((error as NSError).code, Int(EINVAL))
+        }
+    }
+
+    func testDeviceConnectionFailureReportsStageAndOriginalCause() async throws {
+        let fixture = try setup()
+        fixture.failDeviceConnection = true
+        await expectFailure(fixture, stage: "连接设备")
+        XCTAssertTrue(fixture.afc.frames.isEmpty)
+        XCTAssertTrue(fixture.installer.requests.isEmpty)
+    }
+
+    func testSendingInstallFailureIsDistinctFromWaitingForResult() async throws {
+        let fixture = try setup()
+        fixture.installer.failSend = true
+        await expectFailure(fixture, stage: "发送安装请求")
+        XCTAssertEqual(fixture.installer.requests.count, 1)
+        XCTAssertEqual(fixture.installer.responseCount, 0)
+        XCTAssertTrue(fixture.afc.closed)
+        XCTAssertTrue(fixture.installer.closed)
+    }
+
     func testSessionFailuresReportTheExactStepAndDoNotUpload() async throws {
         for (operation, expected) in [("TLS", "配对认证"), ("GetValue", "读取设备标识"),
             ("com.apple.afc", "启动文件服务"), ("com.apple.mobile.installation_proxy", "启动安装服务")] {
@@ -89,7 +128,10 @@ final class InstallCoordinatorTests: XCTestCase {
     }
 
     private func run(_ fixture: InstallFixture) async throws {
-        let coordinator = InstallCoordinator(makeTransport: { _ in fixture.lockdown },
+        let coordinator = InstallCoordinator(makeTransport: { _ in
+                if fixture.failDeviceConnection { throw installTLSFailure() }
+                return fixture.lockdown
+            },
             openService: { _, endpoint, _ in
                 if endpoint.port == fixture.failOpeningPort { throw installTLSFailure() }
                 return endpoint.port == 1234 ? fixture.afc : fixture.installer
@@ -110,6 +152,7 @@ private final class InstallFixture {
     let afc = InstallServiceFixture()
     let installer = InstallServiceFixture()
     var failOpeningPort: UInt16?
+    var failDeviceConnection = false
     init(ipa: URL, pairing: Data) { self.ipa = ipa; self.pairing = pairing }
 }
 
@@ -139,12 +182,16 @@ private final class InstallLockdownFixture: LockdownTransport {
 private final class InstallServiceFixture: DeviceServiceTransport {
     var failOperation: AFCOperation?
     var failReceive = false
+    var failSend = false
     var cancelWrite = false
     var closed = false
     var frames: [AFCFrame] = []
     var requests: [[String: Any]] = []
     var responseCount = 0
-    func sendPlist(_ value: [String: Any]) async throws { requests.append(value) }
+    func sendPlist(_ value: [String: Any]) async throws {
+        requests.append(value)
+        if failSend { throw installTLSFailure() }
+    }
     func receivePlist() async throws -> [String: Any] {
         if failReceive { throw installTLSFailure() }
         responseCount += 1
