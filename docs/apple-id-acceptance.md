@@ -79,3 +79,9 @@ USB 只读探测按安装流程现有顺序启动 AFC、installation_proxy 并�
 0.2.8 真机复测：先导出当前签名产物，再用原 Apple ID 和 LocSign 应用标识覆盖更新，确认版本 `0.2.8（14）`。保持原配对文件、地址、团队、个人签名标识和 LocalDevVPN；若需重新生成签名产物，优先使用本机有效材料。点击安装一次，记录完整错误和进度，或分别确认安装完成及实际启动。连接页检查仍只确认身份认证和服务连接，不代表文件操作或安装已成功。
 
 0.2.8 交付验证：250 项 XCTest、4 项打包测试、模拟器/设备构建及 IPA 打包通过[CI](https://github.com/kevin9525/locsign-public-build/actions/runs/42563213794)。最终未签名 IPA 已核验 0.2.8（14）、原应用标识、必需资源和 CRC。心跳缺失的网络服务断开已通过对照探测定位；完整的 LocSign + LocalDevVPN 安装、启动仍待用户复测。
+
+0.2.8 真机复测（2026-11-09）：USB 已确认版本 0.2.8（14）。用户重现后，系统日志显示 LocSign 的 PublicStaging IPA 已上传并提交安装，iOS 校验 Feather 2.9.0 时返回 `resource added`、`0xe8008017` 和 `MIInstallerErrorDomain` 13。只读取回 LocSign 的四个缓存 IPA，均发现描述文件存在却不在 CodeResources 清单内；其余 77 项资源哈希和清单的 Mach-O 签名槽匹配。此结果确认原上传断开阶段已走通，尚未安装成功，也不能确定早前 C03 材料的恢复来源。
+
+0.2.9（15）修正固定 Zsign 源码中描述文件保留条件，移除签后补写。更新后选回原 Feather IPA，保持原团队、设备及个人签名标识，优先点击“使用本机有效材料签名”，再安装新产物；旧签名 IPA 不能直接复用。最终验收仍需设备返回安装完成，且 Feather 实际能启动。根因与测试证据见[资源签名修复](spike/2026-11-09-signing-resource-seal.md)。
+
+0.2.9 交付验证：250 项 XCTest、4 项打包测试、模拟器/设备构建及 IPA 打包通过[CI](https://github.com/kevin9525/locsign-public-build/actions/runs/42571719945)。已下载并核验最终未签名 IPA 的 0.2.9（15）、原应用标识、必需资源和 CRC。签名资源封装缺陷已有失败/通过回归证据；真机安装和启动仍需按上述步骤确认。

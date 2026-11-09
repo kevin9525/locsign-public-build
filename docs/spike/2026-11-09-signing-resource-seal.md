@@ -44,7 +44,20 @@ other cases passed. A separate assertion against the actual device IPA failed
 for the same missing entry. Four local packaging tests passed. Independent
 read-only review found no blocking issue in the targeted patch or package wiring.
 
-GREEN validation is in progress. Device logs and signed artifacts contain private
+GREEN CI run `42571719945` (source `69b11bf776774410fd743da061600f41faedfd2a`)
+passed all 250 XCTest cases with zero failures, including both real signing
+regressions. Four packaging tests, simulator/device builds and IPA assembly
+passed. The downloaded unsigned IPA was verified as 0.2.9 (15), original
+`com.locsign.LocSign`, with required bundled resources and valid ZIP CRCs.
+
+- Size: 12,944,118 bytes
+- SHA-256: `3a9b1d1acc7938cb2ff1ac079a42584b9601f62e44ab190dc9f6d3fff09d5cc1`
+
+Production code/config and signing regression tests match the tested public
+snapshot. Three pre-existing public fixture/document/parser-test redactions
+remain intentionally different from the private repository.
+
+Device logs and signed artifacts contain private
 material and remain outside tracked/public source. A fresh device installation
 after re-signing remains the acceptance check; existing signed IPAs are not
 repaired by upgrading LocSign.
