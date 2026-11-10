@@ -13,7 +13,8 @@ final class DeveloperProfileDiagnosticsTests: XCTestCase {
     }
 
     func testDiagnosticCluesIgnoreQuotedNamesAndNeverExposeUnknownFields() throws {
-        for quote in ["'duplicate profile name'", "\"duplicate profile name\"", "“duplicate profile name”", "‘duplicate profile name’"] {
+        for quote in ["'duplicate profile name'", "\"duplicate profile name\"", "“duplicate profile name”", "‘duplicate profile name’",
+                      "'Alice's duplicate name'", "‘Alice’s duplicate name’", "duplicate name 'unfinished"] {
             let data = try payload(code: "ENTITY_ERROR", detail: "opaque-private " + quote, pointer: "/opaque/synthetic-private@example.com")
             let error = try XCTUnwrap(DeveloperProfileDiagnostics.rejection(status: 409, data: data))
             XCTAssertTrue(error.localizedDescription.contains("ENTITY_ERROR"))

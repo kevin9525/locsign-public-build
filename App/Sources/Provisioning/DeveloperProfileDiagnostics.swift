@@ -97,19 +97,28 @@ enum DeveloperProfileEvidence: String, Sendable, Equatable {
             if pointer == "/data/attributes/profileType" { result.append(.typeField) }
         }
         guard let detail = error["detail"] as? String, detail.utf8.count <= 4096 else { return result }
-        // Discard quoted values (also an unfinished quote), then match complete
-        // words. Emails, URLs and compound identifiers cannot supply keywords.
+        // Discard quoted values, then match complete words. Ambiguous or
+        // unfinished quotes suppress all keywords; only code/field remain.
         var unquoted = ""
         var closingQuote: Character?
         let quotes: [Character: Character] = ["'": "'", "\"": "\"", "“": "”", "‘": "’"]
-        for character in detail {
+        let characters = Array(detail)
+        for (index, character) in characters.enumerated() {
             if let closing = closingQuote {
-                if character == closing { closingQuote = nil; unquoted.append(" ") }
+                if character == closing {
+                    if index + 1 < characters.count {
+                        let next = characters[index + 1]
+                        if next.isLetter || next.isNumber { return result }
+                    }
+                    closingQuote = nil
+                    unquoted.append(" ")
+                }
             } else if let closing = quotes[character] {
                 closingQuote = closing
                 unquoted.append(" ")
             } else { unquoted.append(character) }
         }
+        guard closingQuote == nil else { return result }
         let punctuation = CharacterSet(charactersIn: ".,;:!?()[]{}")
         let words = Set(unquoted.lowercased().split(whereSeparator: { $0.isWhitespace }).map {
             String($0).trimmingCharacters(in: punctuation)
