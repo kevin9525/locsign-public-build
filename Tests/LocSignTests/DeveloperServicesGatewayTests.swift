@@ -9,7 +9,7 @@ final class DeveloperServicesGatewayTests: XCTestCase {
         let transport = DeveloperAPIFixture()
         await transport.setProfileConflicts([["code": "ENTITY_ERROR.ATTRIBUTE.INVALID", "detail": "A profile with name 'test' already exists on this team.", "source": ["pointer": "/data/attributes/name"]]])
         await transport.setCancelOnProfileConflict()
-        let subject = gateway(transport)
+        let subject = try gateway(transport)
         let task = Task { try await subject.createDevelopmentProfile(bundleID: "bundle", certificateID: "cert", deviceID: "device") }
         do { _ = try await task.value; XCTFail("Cancellation ignored") }
         catch { XCTAssertTrue(error is CancellationError) }
