@@ -23,7 +23,10 @@ DDI_FILES = {
 
 
 def verified(path, size, digest):
-    return path.is_file() and path.stat().st_size == size and hashlib.file_digest(path.open("rb"), "sha256").hexdigest() == digest
+    if not path.is_file() or path.stat().st_size != size:
+        return False
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest() == digest
 
 
 def write_verified(stream, destination, size, digest):

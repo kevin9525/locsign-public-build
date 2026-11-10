@@ -18,8 +18,10 @@ final class LocationViewModel: ObservableObject {
     private var search: MKLocalSearch?
     private var searchID = UUID()
     private var operation: Task<Void, Never>?
+    private var backgrounded = false
 
-    init(settings: InstallationSettings, controller: any DeviceLocationControlling = DeviceLocationController()) {
+    init(settings: InstallationSettings, controller: (any DeviceLocationControlling)? = nil) {
+        let controller = controller ?? DeviceLocationController()
         self.settings = settings; self.controller = controller
         controller.onSessionFailure = { [weak self] message in
             Task { @MainActor in
@@ -49,7 +51,7 @@ final class LocationViewModel: ObservableObject {
         search?.cancel()
         let id = UUID(); searchID = id
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { searchResults = []; return }
+        guard !query.isEmpty else { searchResults = []; isSearching = false; search = nil; return }
         isSearching = true
         let request = MKLocalSearch.Request(); request.naturalLanguageQuery = query
         let current = MKLocalSearch(request: request); search = current
@@ -62,8 +64,10 @@ final class LocationViewModel: ObservableObject {
     }
     func apply() { start(clear: false) }
     func restore() { start(clear: true) }
-    func cancel() { operation?.cancel() }
+    func cancel() { operation?.cancel(); if isBusy { status = "正在取消，等待当前设备请求结束…" } }
+    func markForeground() { backgrounded = false }
     func markBackground() {
+        backgrounded = true
         if status.contains("设备已接受模拟坐标") { status = "应用进入后台，定位连接持续性未确认；回到前台后可重新应用或恢复" }
     }
     func settingsChanged() async {
@@ -82,7 +86,7 @@ final class LocationViewModel: ObservableObject {
         guard !isBusy, settings.operationID == nil else { return }
         guard let pairing = settings.pairing?.data else { error = "请先在安装页导入这台手机的配对文件"; return }
         let coordinate: LocationCoordinate?
-        do { coordinate = clear ? nil : try enteredCoordinate() }
+        do { coordinate = try (clear ? nil : enteredCoordinate()) }
         catch { self.error = error.localizedDescription; return }
         guard let token = settings.beginOperation() else { return }
         isBusy = true; error = nil
@@ -94,7 +98,7 @@ final class LocationViewModel: ObservableObject {
                 if clear { try await controller.clear(host: host, pairingData: pairing) }
                 else if let coordinate { try await controller.set(coordinate, host: host, pairingData: pairing) }
                 try Task.checkCancellation()
-                status = clear ? "设备已接受恢复真实定位" : "设备已接受模拟坐标，保持当前页面可维持连接"
+                status = clear ? "设备已接受恢复真实定位" : backgrounded ? "应用进入后台，定位连接持续性未确认；回到前台后可重新应用或恢复" : "设备已接受模拟坐标，保持当前页面可维持连接"
                 if !clear, let coordinate {
                     selected = .init(latitude: coordinate.latitude, longitude: coordinate.longitude)
                     settings.defaults.set(coordinate.latitude, forKey: "location.latitude")

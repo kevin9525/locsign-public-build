@@ -46,11 +46,13 @@ final class DeviceLocationController: DeviceLocationControlling {
         defer { busy = false }
         do {
             let heartbeat = try await connect(host: host, pairingData: pairingData)
+            let operationGeneration = generation
             try Task.checkCancellation()
             try await worker.set(coordinate, host: host, pairingData: pairingData,
                                  ddiDirectory: Bundle.main.url(forResource: "LocationDDI", withExtension: nil),
                                  healthCheck: { try heartbeat.check() })
             try Task.checkCancellation()
+            guard generation == operationGeneration else { throw CancellationError() }
         } catch {
             await disconnect()
             throw error
@@ -63,11 +65,13 @@ final class DeviceLocationController: DeviceLocationControlling {
         defer { busy = false }
         do {
             let heartbeat = try await connect(host: host, pairingData: pairingData)
+            let operationGeneration = generation
             try Task.checkCancellation()
             try await worker.clear(host: host, pairingData: pairingData,
                                    ddiDirectory: Bundle.main.url(forResource: "LocationDDI", withExtension: nil),
                                    healthCheck: { try heartbeat.check() })
             try Task.checkCancellation()
+            guard generation == operationGeneration else { throw CancellationError() }
             await disconnect()
         } catch {
             await disconnect()

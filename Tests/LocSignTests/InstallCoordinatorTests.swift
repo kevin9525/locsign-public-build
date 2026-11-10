@@ -188,6 +188,81 @@ final class InstallCoordinatorTests: XCTestCase {
         XCTAssertTrue(fixture.heartbeat.closed)
     }
 
+    func testCancellationInterruptsBlockedAFCResponseWithoutFurtherProtocolCommands() async throws {
+        let fixture = try setup()
+        fixture.afc.holdWrite = true
+        let waiting = expectation(description: "waiting for AFC response")
+        let finished = expectation(description: "cancelled AFC install returned")
+        fixture.afc.blocked.onWaiting = { waiting.fulfill() }
+        let task = Task {
+            do { try await run(fixture); XCTFail("Cancelled installation succeeded") }
+            catch { XCTAssertTrue(error is CancellationError) }
+            finished.fulfill()
+        }
+        await fulfillment(of: [waiting], timeout: 2)
+        let sent = fixture.afc.frames.count
+        task.cancel()
+        await fulfillment(of: [finished], timeout: 2)
+        XCTAssertEqual(fixture.afc.frames.count, sent)
+        XCTAssertTrue(fixture.installer.requests.isEmpty)
+        XCTAssertEqual(fixture.afc.blocked.closeCount, 1)
+        XCTAssertEqual(fixture.installer.blocked.closeCount, 1)
+        XCTAssertEqual(fixture.lockdown.closeCount, 1)
+        XCTAssertEqual(fixture.heartbeat.closeCount, 1)
+        fixture.afc.blocked.close()
+        await task.value
+    }
+
+    func testCancellationInterruptsInstallResultWithoutSendingAFCCleanup() async throws {
+        let fixture = try setup()
+        fixture.installer.holdResult = true
+        let waiting = expectation(description: "waiting for installation result")
+        let finished = expectation(description: "cancelled result wait returned")
+        fixture.installer.blocked.onWaiting = { waiting.fulfill() }
+        let task = Task {
+            do { try await run(fixture); XCTFail("Cancelled installation succeeded") }
+            catch { XCTAssertTrue(error is CancellationError) }
+            finished.fulfill()
+        }
+        await fulfillment(of: [waiting], timeout: 2)
+        let sent = fixture.afc.frames.count
+        task.cancel()
+        await fulfillment(of: [finished], timeout: 2)
+        XCTAssertEqual(fixture.afc.frames.count, sent)
+        XCTAssertEqual(fixture.installer.requests.compactMap { $0["Command"] as? String }, ["Install"])
+        XCTAssertEqual(fixture.installer.responseCount, 1)
+        XCTAssertEqual(fixture.afc.blocked.closeCount, 1)
+        XCTAssertEqual(fixture.installer.blocked.closeCount, 1)
+        XCTAssertEqual(fixture.lockdown.closeCount, 1)
+        XCTAssertEqual(fixture.heartbeat.closeCount, 1)
+        fixture.installer.blocked.close()
+        await task.value
+    }
+
+    func testCancelledServiceOpenClosesLateConnectionWithoutUpload() async throws {
+        let fixture = try setup()
+        let gate = InstallBlockedRead()
+        let opening = expectation(description: "opening installer service")
+        gate.onWaiting = { opening.fulfill() }
+        fixture.beforeOpening = { port in
+            if port == 5678 { try? await gate.wait() }
+        }
+        let task = Task {
+            do { try await run(fixture); XCTFail("Cancelled installation succeeded") }
+            catch { XCTAssertTrue(error is CancellationError) }
+        }
+        await fulfillment(of: [opening], timeout: 2)
+        task.cancel()
+        gate.close()
+        await task.value
+        XCTAssertTrue(fixture.afc.frames.isEmpty)
+        XCTAssertTrue(fixture.installer.requests.isEmpty)
+        XCTAssertEqual(fixture.afc.blocked.closeCount, 1)
+        XCTAssertEqual(fixture.installer.blocked.closeCount, 1)
+        XCTAssertEqual(fixture.lockdown.closeCount, 1)
+        XCTAssertEqual(fixture.heartbeat.closeCount, 1)
+    }
+
     private func expectFailure(_ fixture: InstallFixture, stage: String) async {
         do { try await run(fixture); XCTFail("Injected connection failure was ignored") }
         catch {
@@ -214,6 +289,7 @@ final class InstallCoordinatorTests: XCTestCase {
             },
             openService: { _, endpoint, _ in
                 if endpoint.port == fixture.failOpeningPort { throw installTLSFailure() }
+                await fixture.beforeOpening?(endpoint.port)
                 if endpoint.port == 3456 { return fixture.heartbeat }
                 return endpoint.port == 1234 ? fixture.afc : fixture.installer
             })
@@ -235,6 +311,7 @@ private final class InstallFixture {
     let heartbeat = InstallHeartbeatFixture()
     var failOpeningPort: UInt16?
     var failDeviceConnection = false
+    var beforeOpening: ((UInt16) async -> Void)?
     init(ipa: URL, pairing: Data) {
         self.ipa = ipa; self.pairing = pairing
         afc.heartbeatReady = { [heartbeat] in heartbeat.poloCount > 0 && !heartbeat.closed }
@@ -243,7 +320,8 @@ private final class InstallFixture {
 
 private final class InstallLockdownFixture: LockdownTransport {
     var failAt: String?
-    var closed = false
+    private(set) var closeCount = 0
+    var closed: Bool { closeCount > 0 }
     private var request: [String: Any] = [:]
     func send(_ request: [String: Any]) async throws { self.request = request }
     func receive() async throws -> [String: Any] {
@@ -262,7 +340,7 @@ private final class InstallLockdownFixture: LockdownTransport {
     func upgradeToTLS(using pairing: PairingRecord) async throws {
         if failAt == "TLS" { throw installTLSFailure() }
     }
-    func close() { closed = true }
+    func close() { closeCount += 1 }
 }
 
 private final class InstallServiceFixture: DeviceServiceTransport {
@@ -270,7 +348,10 @@ private final class InstallServiceFixture: DeviceServiceTransport {
     var failReceive = false
     var failSend = false
     var cancelWrite = false
-    var closed = false
+    let blocked = InstallBlockedRead()
+    var closed: Bool { blocked.closeCount > 0 }
+    var holdWrite = false
+    var holdResult = false
     var frames: [AFCFrame] = []
     var requests: [[String: Any]] = []
     var responseCount = 0
@@ -285,6 +366,7 @@ private final class InstallServiceFixture: DeviceServiceTransport {
     func receivePlist() async throws -> [String: Any] {
         if failReceive { throw installTLSFailure() }
         responseCount += 1
+        if holdResult { try await blocked.wait() }
         if responseCount > 1 { try await beforeComplete?() }
         return responseCount == 1 ? ["Status": "Installing", "PercentComplete": 100] : ["Status": "Complete"]
     }
@@ -294,6 +376,7 @@ private final class InstallServiceFixture: DeviceServiceTransport {
         if frame.operation == failOperation { throw installTLSFailure() }
         if cancelWrite && frame.operation == .write { throw CancellationError() }
         if frame.operation == .write { try await beforeWrite?() }
+        if frame.operation == .write && holdWrite { try await blocked.wait() }
         if frame.operation == .fileOpen {
             return AFCFrame(operation: .fileOpenResult, packetNumber: frame.packetNumber,
                 payload: Data([1, 0, 0, 0, 0, 0, 0, 0]), thisLength: nil)
@@ -301,7 +384,7 @@ private final class InstallServiceFixture: DeviceServiceTransport {
         return AFCFrame(operation: .status, packetNumber: frame.packetNumber,
             payload: Data(repeating: 0, count: 8), thisLength: nil)
     }
-    func close() { closed = true }
+    func close() { blocked.close() }
 }
 
 private final class InstallHeartbeatFixture: DeviceServiceTransport {
@@ -314,6 +397,7 @@ private final class InstallHeartbeatFixture: DeviceServiceTransport {
     private let lock = NSLock()
     private var replies = 0
     private var isClosed = false
+    private var closes = 0
     private var first = true
     private var waiting: CheckedContinuation<[String: Any], Error>?
     private var pending: [[String: Any]] = []
@@ -322,6 +406,7 @@ private final class InstallHeartbeatFixture: DeviceServiceTransport {
 
     var poloCount: Int { lock.lock(); defer { lock.unlock() }; return replies }
     var closed: Bool { lock.lock(); defer { lock.unlock() }; return isClosed }
+    var closeCount: Int { lock.lock(); defer { lock.unlock() }; return closes }
 
     func sendPlist(_ value: [String: Any]) async throws {
         if failSend { throw installTLSFailure() }
@@ -419,6 +504,7 @@ private final class InstallHeartbeatFixture: DeviceServiceTransport {
 
     func close() {
         lock.lock()
+        closes += 1
         isClosed = true
         let continuation = waiting
         waiting = nil
@@ -430,5 +516,36 @@ private final class InstallHeartbeatFixture: DeviceServiceTransport {
         continuation?.resume(throwing: CancellationError())
         acknowledgements.forEach { $0.resume(throwing: CancellationError()) }
         closingWaiters.forEach { $0.resume() }
+    }
+}
+
+private final class InstallBlockedRead {
+    var onWaiting: (() -> Void)?
+    private let lock = NSLock()
+    private var closes = 0
+    private var waiting: CheckedContinuation<Void, Error>?
+    var closeCount: Int { lock.lock(); defer { lock.unlock() }; return closes }
+
+    func wait() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            lock.lock()
+            if closes > 0 {
+                lock.unlock()
+                continuation.resume(throwing: CancellationError())
+            } else {
+                waiting = continuation
+                lock.unlock()
+                onWaiting?()
+            }
+        }
+    }
+
+    func close() {
+        lock.lock()
+        closes += 1
+        let waiting = self.waiting
+        self.waiting = nil
+        lock.unlock()
+        waiting?.resume(throwing: CancellationError())
     }
 }

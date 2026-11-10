@@ -26,10 +26,10 @@ final class AppRenewalCoordinator: ObservableObject {
          installer: any IPAInstalling = InstallCoordinator(), probe: any PairedDeviceProbing = ProvisioningDeviceProbe(),
          runningBundleID: String? = Bundle.main.bundleIdentifier, now: @escaping () -> Date = Date.init,
          inspect: @escaping @Sendable (URL) throws -> ProvisioningApp = { try ProvisioningIPAPreflight().inspect($0) },
-         sign: @escaping @MainActor (URL, ProvisioningMaterial) async throws -> URL = SigningViewModel.signProvisionedMaterial) {
+         sign: (@MainActor (URL, ProvisioningMaterial) async throws -> URL)? = nil) {
         self.settings = settings; self.library = library; self.account = account
         self.installer = installer; self.probe = probe; self.runningBundleID = runningBundleID
-        self.now = now; self.inspect = inspect; self.sign = sign
+        self.now = now; self.inspect = inspect; self.sign = sign ?? SigningViewModel.signProvisionedMaterial
         enabled = settings.defaults.object(forKey: "renewal.enabled") as? Bool ?? true
     }
 
@@ -60,6 +60,7 @@ final class AppRenewalCoordinator: ObservableObject {
                     stage = app.identity.signingBundleID == runningBundleID ? "等待重新打开 LocSign 核对自身续签" : "\(app.name) 续签完成"
                 } catch {
                     succeeded = false
+                    if error as? ProvisioningError == .invalidAccount { account.requireLogin() }
                     let message = error is CancellationError ? "续签已暂停，下次打开 App 时重试" : ProvisioningRedaction.redact(error.localizedDescription)
                     self.error = message
                     try? library.fail(id: id, message: message, preservePending: app.identity.signingBundleID == runningBundleID)

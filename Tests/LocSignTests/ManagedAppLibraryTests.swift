@@ -82,6 +82,28 @@ final class ManagedAppLibraryTests: XCTestCase {
         XCTAssertNotNil(reopened.apps.first?.installedAt)
     }
 
+    func testSelfInstallReusingCurrentProfileCannotProveReplacementAfterRelaunch() async throws {
+        let (_, folder, source) = try setup()
+        let library = ManagedAppLibrary(directory: folder, runningBundleID: identity.signingBundleID, currentProfile: Data([1]))
+        _ = try await library.prepare(source: source, name: "Demo", identity: identity, material: material(100))
+        let reopened = ManagedAppLibrary(directory: folder, runningBundleID: identity.signingBundleID, currentProfile: Data([1]))
+        try reopened.reconcileSelf(bundleID: identity.signingBundleID, embeddedProfile: Data([1]))
+        XCTAssertNil(reopened.apps.first?.installedAt)
+        XCTAssertNotNil(reopened.apps.first?.pending)
+    }
+
+    func testManifestDoesNotPersistPrivateKeyOrProfileContents() async throws {
+        let (library, folder, source) = try setup()
+        _ = try await library.prepare(source: source, name: "Demo", identity: identity, material: material(100))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: folder.appendingPathComponent("apps.json"))) as? [String: Any])
+        let rows = try XCTUnwrap(json["apps"] as? [[String: Any]])
+        let pending = try XCTUnwrap(rows.first?["pending"] as? [String: Any])
+        XCTAssertNil(pending["privateKeyPEM"])
+        XCTAssertNil(pending["profileData"])
+        XCTAssertEqual((pending["profileSHA256"] as? String)?.count, 64)
+        XCTAssertFalse(try String(contentsOf: folder.appendingPathComponent("apps.json")).contains("never store this"))
+    }
+
     private func material(_ expiry: TimeInterval) -> ProvisioningMaterial {
         .init(privateKeyPEM: "never store this", profileData: Data([1]), certificateExpiry: Date(timeIntervalSince1970: 1000),
             profileExpiry: Date(timeIntervalSince1970: expiry))

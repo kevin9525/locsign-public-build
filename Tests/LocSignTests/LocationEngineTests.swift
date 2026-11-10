@@ -35,6 +35,24 @@ final class LocationEngineTests: XCTestCase {
         await worker.disconnect()
         XCTAssertEqual(recorder.snapshot().map(\.0), ["clear", "close"])
     }
+
+    func testCancellationDoesNotCloseHandleWhileNativeCallIsActive() async throws {
+        let entered = expectation(description: "Native call entered")
+        let recorder = LocationThreadRecorder()
+        let release = DispatchSemaphore(value: 0)
+        let worker = LocationSessionWorker(makeSession: { _, _, _ in
+            BlockingLocationSession(recorder: recorder, entered: { entered.fulfill() }, release: release)
+        })
+        let coordinate = try LocationCoordinate(latitude: 3, longitude: 4)
+        let task = Task { try await worker.set(coordinate, host: "host", pairingData: Data(), ddiDirectory: nil, healthCheck: {}) }
+        await fulfillment(of: [entered], timeout: 2)
+        task.cancel()
+        XCTAssertFalse(recorder.snapshot().contains { $0.0 == "close" })
+        release.signal()
+        do { try await task.value; XCTFail("Cancelled request must not report success") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertEqual(recorder.snapshot().map(\.0), ["set-enter", "set-exit", "close"])
+    }
 }
 
 private final class LocationThreadRecorder: @unchecked Sendable {
@@ -58,5 +76,21 @@ private final class TestLocationSession: LocationNativeSession {
         recorder.record("clear")
         if failClear { throw NSError(domain: "Test", code: 1) }
     }
+    func close() { recorder.record("close") }
+}
+
+private final class BlockingLocationSession: LocationNativeSession {
+    let recorder: LocationThreadRecorder
+    let entered: () -> Void
+    let release: DispatchSemaphore
+    init(recorder: LocationThreadRecorder, entered: @escaping () -> Void, release: DispatchSemaphore) {
+        self.recorder = recorder; self.entered = entered; self.release = release
+    }
+    func apply(_ coordinate: LocationCoordinate) throws {
+        recorder.record("set-enter"); entered()
+        _ = release.wait(timeout: .now() + 5)
+        recorder.record("set-exit")
+    }
+    func restore() throws { }
     func close() { recorder.record("close") }
 }

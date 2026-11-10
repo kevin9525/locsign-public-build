@@ -32,6 +32,9 @@ final class RenewalBackgroundService {
                         self.schedule(); background.setTaskCompleted(success: false); return
                     }
                     self.reloadProtectedState()
+                    // Preserve a future opportunity even if iOS terminates this
+                    // process while cancellation drains a native signer.
+                    self.schedule()
                     let success = await self.renewal.runDue()
                     self.schedule()
                     background.setTaskCompleted(success: success)

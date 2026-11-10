@@ -2,7 +2,13 @@
 
 iOS 18 签名与定位工具的开发中项目，参考 NB 助手的核心使用流程。
 
-当前版本 **0.3.2 / build 18** 修复创建描述文件始终使用固定名称的问题：仍优先复用有效材料，确实需要创建时生成新的描述文件显示名称，保持应用标识、证书及设备关联不变。P00 增加固定的 Apple 错误代码和脱敏关键词，便于区分其他创建拒绝；不会自动删除 profile。用户在 0.3.1 仍遇到 P00 / HTTP 409，实际原因尚未取得，0.3.2 真机复测待确认。调查和验证见[描述文件名称与 P00 证据](docs/spike/2026-11-10-profile-names.md)。
+**0.4.0 / build 19（验证中）** 增加 App 管理、到期前自动续签和固定点虚拟定位。新版安装会保留受保护的原 IPA；已安装 App 可从设备读取，旧版安装的 App 需选择原 IPA 再安装一次才能纳入续签管理。续签沿用原账号、团队、设备和签名标识，必须取得更晚到期的有效材料，只有设备确认安装完成才更新有效期。
+
+自动续签默认提前 48 小时，失败后至少间隔 6 小时重试；系统安排后台机会，打开 App 时补做。可逐个或全部关闭，并开启失败通知。登录失效、证书撤销确认或设备变更需用户处理。LocSign 自身只允许手动续签，替换后需重新启动核对新描述文件；不会在后台自动退出自己。
+
+定位支持地图选点、地址搜索、经纬度输入、应用和恢复。需要开发者模式、匹配的配对文件和 LocalDevVPN；首次准备向 Apple 请求开发者镜像个性化。使用固定版本 idevice 的 CoreDevice/RSD/DVT 接口，并保持定位连接；系统挂起后不能保证持续生效。该版本的构建、测试与真机验收结果在完成后记录，不能把地图上的标记视为设备已修改位置。
+
+上一稳定版本 **0.3.2 / build 18** 修复创建描述文件始终使用固定名称的问题：仍优先复用有效材料，确实需要创建时生成新的描述文件显示名称，保持应用标识、证书及设备关联不变。P00 增加固定的 Apple 错误代码和脱敏关键词，便于区分其他创建拒绝；不会自动删除 profile。用户在 0.3.1 仍遇到 P00 / HTTP 409，实际原因尚未取得，用户于 2026-11-10 确认安装完成，本轮未单独确认启动。调查和验证见[描述文件名称与 P00 证据](docs/spike/2026-11-10-profile-names.md)。
 
 0.3.2 的 289 项 XCTest、4 项打包测试、模拟器/设备构建与 IPA 打包已通过[CI](https://github.com/kevin9525/locsign-public-build/actions/runs/42753288189)，最终 IPA 版本、应用标识、资源和 CRC 已核验。
 
@@ -18,7 +24,7 @@ iOS 18 签名与定位工具的开发中项目，参考 NB 助手的核心使用
 
 继续保留 0.2.6 的 C03 证书内容恢复、PEM/DER/Base64 支持、C01–C09 诊断、可选个人签名标识、Apple ID 登录、材料复用、手动导入和签名导出。申请结果不确定时保存私钥，重试只查询匹配证书，不重复提交 CSR；只有明确的申请拒绝才允许再次申请。查询不到匹配证书时会停止，不保证恢复成功。个人标识在同一团队与原 App 下固定，新标识作为独立应用安装。证书撤销必须确认精确列表；不会自动删除 profile 或修改 capability。详见[缺失证书内容恢复](docs/spike/2026-11-07-missing-certificate-content.md)。
 
-自动申请当前接受无扩展/嵌套 App、未加密的单一 arm64 IPA；FAT 主程序、DER entitlement 与额外 capability 暂不支持。0.2.9 的 250 项 XCTest、4 项打包测试、模拟器/设备构建和 IPA 打包已通过[CI](https://github.com/kevin9525/locsign-public-build/actions/runs/42571719945)，最终 IPA 的版本、原应用标识、必需资源和 CRC 已核验。两条真实签名回归用例在修复前复现缺少描述文件资源项，修复后通过，包括主程序对资源清单的签名校验。用户于 2026-11-09 确认 Feather 安装成功且能正常打开，本次签名安装流程通过[真机验收](docs/apple-id-acceptance.md)；该结果不代表所有 IPA 均兼容。Apple ID 登录及配对已由用户确认成功；C03 恢复是否成功需按实际签名材料来源单独确认。全局定位仍未接入。
+自动申请当前接受无扩展/嵌套 App、未加密的单一 arm64 IPA；FAT 主程序、DER entitlement 与额外 capability 暂不支持。0.2.9 的 250 项 XCTest、4 项打包测试、模拟器/设备构建和 IPA 打包已通过[CI](https://github.com/kevin9525/locsign-public-build/actions/runs/42571719945)，最终 IPA 的版本、原应用标识、必需资源和 CRC 已核验。两条真实签名回归用例在修复前复现缺少描述文件资源项，修复后通过，包括主程序对资源清单的签名校验。用户于 2026-11-09 确认 Feather 安装成功且能正常打开，本次签名安装流程通过[真机验收](docs/apple-id-acceptance.md)；该结果不代表所有 IPA 均兼容。Apple ID 登录及配对已由用户确认成功；C03 恢复是否成功需按实际签名材料来源单独确认。0.2.9 尚未接入全局定位。
 
 Anisette 默认地址为 `https://mac-ani.jkcoxson.com`。使用前需同意 UUID、ADI 握手消息/ADI blob 和来源 IP 披露；可换地址或关闭；已有材料可在重新校验后本机签名，无需访问提供方或 Apple。密码仅用于本次 Apple 登录，会话和私钥保存到本机专用 Keychain。覆盖更新保留资料；明确退出清除该账号资料和当前自动签名产物。
 
@@ -28,6 +34,8 @@ Anisette 默认地址为 `https://mac-ani.jkcoxson.com`。使用前需同意 UUI
 
 ```sh
 brew install xcodegen
+python3 .ci/prepare-idevice.py
+python3 .ci/build-idevice.py
 xcodegen generate
 xcodebuild test -project LocSign.xcodeproj -scheme LocSign \
   -destination 'platform=iOS Simulator,name=iPhone 16' \

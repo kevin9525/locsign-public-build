@@ -12,10 +12,10 @@ static BOOL LSLocationError(NSError **error, NSString *message, NSInteger code) 
 
 static BOOL LSLocationAccept(struct IdeviceFfiError *failure, NSString *operation, NSError **error) {
     if (!failure) return YES;
-    NSString *detail = failure->message ? [NSString stringWithUTF8String:failure->message] : @"设备未响应";
     NSInteger code = failure->code;
     idevice_error_free(failure);
-    return LSLocationError(error, [NSString stringWithFormat:@"%@失败：%@。请确认开发者模式和 LocalDevVPN 已开启。", operation, detail ?: @"未知错误"], code);
+    // Upstream debug messages can include device identifiers and protocol payloads.
+    return LSLocationError(error, [NSString stringWithFormat:@"%@失败（错误码 %ld）。请确认开发者模式和 LocalDevVPN 已开启，并检查网络连接。", operation, (long)code], code);
 }
 
 static NSData *LSLocationImage(NSURL *directory, NSString *name, NSUInteger expectedSize,
@@ -105,7 +105,7 @@ static NSData *LSLocationImage(NSURL *directory, NSString *name, NSUInteger expe
             if (signatureLength) return YES;
         } else {
             // Only a known 'no image' response permits automatic mounting.
-            BOOL missing = lookup->message && strcmp(lookup->message, "NotFound") == 0;
+            BOOL missing = lookup->code == 20; // IdeviceError::NotFound in pinned v0.1.68.
             if (!missing) return LSLocationAccept(lookup, @"检查开发者镜像", error);
             idevice_error_free(lookup);
         }

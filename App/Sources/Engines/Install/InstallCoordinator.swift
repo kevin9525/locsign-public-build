@@ -20,6 +20,18 @@ final class InstallCoordinator: IPAInstalling {
 
     func install(ipaURL: URL, host: String, pairingData: Data,
                  progress: @Sendable (Double) async -> Void = { _ in }) async throws {
+        let lifetime = DeviceOperationLifetime()
+        try await withTaskCancellationHandler {
+            try await performInstall(ipaURL: ipaURL, host: host, pairingData: pairingData,
+                                     lifetime: lifetime, progress: progress)
+        } onCancel: {
+            lifetime.close()
+        }
+    }
+
+    private func performInstall(ipaURL: URL, host: String, pairingData: Data,
+                                lifetime: DeviceOperationLifetime,
+                                progress: @Sendable (Double) async -> Void) async throws {
         var stage = InstallationStep.readPackage
         var session: LockdownSession?
         var heartbeat: DeviceHeartbeat?
@@ -30,6 +42,7 @@ final class InstallCoordinator: IPAInstalling {
         let remotePath = "\(remoteDirectory)/app.ipa"
 
         do {
+            try Task.checkCancellation()
             guard ipaURL.isFileURL, FileManager.default.fileExists(atPath: ipaURL.path) else {
                 throw LocSignError.install("待安装 IPA 不存在")
             }
@@ -38,7 +51,8 @@ final class InstallCoordinator: IPAInstalling {
             stage = .readPairing
             let pairing = try PairingRecord(data: pairingData)
             stage = .connectDevice
-            let transport = try await makeTransport(host)
+            let transport = lifetime.own(try await makeTransport(host))
+            try Task.checkCancellation()
             let activeSession = LockdownSession(transport: transport, pairing: pairing)
             session = activeSession
             stage = .authenticate
@@ -48,7 +62,8 @@ final class InstallCoordinator: IPAInstalling {
             stage = .startHeartbeat
             let heartbeatEndpoint = try await activeSession.startService("com.apple.mobile.heartbeat")
             stage = .connectHeartbeat
-            let heartbeatConnection = try await openService(host, heartbeatEndpoint, pairing)
+            let heartbeatConnection = lifetime.own(try await openService(host, heartbeatEndpoint, pairing))
+            try Task.checkCancellation()
             let activeHeartbeat = DeviceHeartbeat(connection: heartbeatConnection)
             heartbeat = activeHeartbeat
             stage = .heartbeat
@@ -59,9 +74,11 @@ final class InstallCoordinator: IPAInstalling {
             stage = .startInstaller
             let installationEndpoint = try await activeSession.startService("com.apple.mobile.installation_proxy")
             stage = .connectAFC
-            afcConnection = try await openService(host, afcEndpoint, pairing)
+            afcConnection = lifetime.own(try await openService(host, afcEndpoint, pairing))
+            try Task.checkCancellation()
             stage = .connectInstaller
-            installConnection = try await openService(host, installationEndpoint, pairing)
+            installConnection = lifetime.own(try await openService(host, installationEndpoint, pairing))
+            try Task.checkCancellation()
 
             guard let afcConnection, let installConnection else {
                 throw LocSignError.install("安装服务连接未建立")
@@ -83,16 +100,21 @@ final class InstallCoordinator: IPAInstalling {
             try await installer.install(packagePath: remotePath) { value in
                 await progress(0.35 + min(max(value, 0), 1) * 0.65)
             }
+            try Task.checkCancellation()
             await progress(1)
-            try? await afc.removePath(remotePath)
-            try? await afc.removePath(remoteDirectory)
+            if !Task.isCancelled {
+                try? await afc.removePath(remotePath)
+                try? await afc.removePath(remoteDirectory)
+            }
             installConnection.close()
             afcConnection.close()
             await activeHeartbeat.stop()
             activeSession.close()
+            lifetime.close()
+            try Task.checkCancellation()
         } catch {
             let failure = InstallationFailure.wrapping(error, at: stage)
-            if let afc = afcClient {
+            if !Task.isCancelled, !(error is CancellationError), let afc = afcClient {
                 try? await afc.removePath(remotePath)
                 try? await afc.removePath(remoteDirectory)
             }
@@ -100,6 +122,7 @@ final class InstallCoordinator: IPAInstalling {
             afcConnection?.close()
             await heartbeat?.stop()
             session?.close()
+            lifetime.close()
             throw failure
         }
     }

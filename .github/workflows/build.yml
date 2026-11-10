@@ -38,8 +38,22 @@ jobs:
           PY
       - name: Install XcodeGen
         run: brew install xcodegen
-      - name: Prepare pinned device location dependency and image
-        run: python3 .ci/prepare-idevice.py
+      - name: Cache Rust location dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.rustup/toolchains/1.94.0-*
+            build/idevice/cargo-target
+          key: locsign-idevice-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.ci/build-idevice.py', '.ci/prepare-idevice.py') }}
+          restore-keys: |
+            locsign-idevice-${{ runner.os }}-${{ runner.arch }}-
+      - name: Build bounded device location library and image
+        run: |
+          set -o pipefail
+          mkdir -p build
+          python3 .ci/build-idevice.py 2>&1 | tee build/idevice-build.log
       - name: Generate Xcode project
         run: |
           xcodegen generate
