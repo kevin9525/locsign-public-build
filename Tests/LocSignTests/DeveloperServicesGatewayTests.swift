@@ -5,6 +5,33 @@ import OpenAPIRuntime
 @testable import LocSign
 
 final class DeveloperServicesGatewayTests: XCTestCase {
+    func testUnclassifiedProfileConflictNeverRetriesCreation() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setProfileConflicts([["code": "UNKNOWN", "detail": "synthetic-sensitive-response"]])
+        do {
+            _ = try await gateway(transport).createDevelopmentProfile(bundleID: "bundle", certificateID: "cert", deviceID: "device")
+            XCTFail("Conflict ignored")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("HTTP 409"))
+            XCTAssertFalse(error.localizedDescription.contains("synthetic-sensitive-response"))
+        }
+        let requests = await transport.requests
+        XCTAssertEqual(requests.count, 1)
+    }
+
+    func testSecondProfileNameConflictStopsAfterOneRetry() async throws {
+        let transport = DeveloperAPIFixture()
+        let conflict: [String: Any] = ["code": "ENTITY_ERROR.ATTRIBUTE.INVALID", "detail": "A profile with name 'synthetic-sensitive-response' already exists on this team.", "source": ["pointer": "/data/attributes/name"]]
+        await transport.setProfileConflicts([conflict, conflict, conflict])
+        do {
+            _ = try await gateway(transport).createDevelopmentProfile(bundleID: "bundle", certificateID: "cert", deviceID: "device")
+            XCTFail("Repeated conflict ignored")
+        } catch { XCTAssertTrue(error.localizedDescription.contains("HTTP 409")) }
+        let requests = await transport.requests
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertFalse(requests.contains { $0.override == "DELETE" })
+    }
+
     func testExplicitProfileNameConflictRetriesOnceWithOnlyNameChanged() async throws {
         let transport = DeveloperAPIFixture()
         await transport.setProfileConflicts([

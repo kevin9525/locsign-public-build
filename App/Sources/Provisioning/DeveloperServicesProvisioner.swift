@@ -15,6 +15,7 @@ struct DeveloperProfile: Sendable { let id: String; let content: Data }
 enum DeveloperServicesError: LocalizedError, Equatable {
     case certificateQuota, rejected(Int), appleRejected(Int), invalidResponse, remoteChanged, network
     case registrationRejected(Int, DeveloperRegistrationReason)
+    case profileRejected(Int, DeveloperProfileReason)
     case certificateResponse(CertificateResponseProblem), issuedCertificateMissing, issuedCertificateConflict
     case certificateRecoveryPending
 
@@ -27,6 +28,7 @@ enum DeveloperServicesError: LocalizedError, Equatable {
         case .remoteChanged: return "Apple Developer Services 证书列表发生变化，请重新申请"
         case .network: return "网络连接失败，请检查连接后重试"
         case .registrationRejected(let status, let reason): return "\(reason.message)（HTTP \(status)）"
+        case .profileRejected(let status, let reason): return "\(reason.message)（HTTP \(status)）"
         case .certificateResponse(let problem): return "证书签发响应：\(problem.message)"
         case .issuedCertificateMissing: return "已收到签发证书，但 Apple 证书列表中尚未找到对应记录"
         case .issuedCertificateConflict: return "Apple 证书列表中的匹配记录不唯一或证书内容不一致，已停止使用"
@@ -185,7 +187,34 @@ struct DeveloperServicesProvisioner: Sendable {
             if let material = try? validate(profile) { return material }
         }
         try Task.checkCancellation()
-        let profile = try await gateway.createDevelopmentProfile(bundleID: bundle.id, certificateID: certificate.id, deviceID: device.id)
+        let profile: DeveloperProfile
+        do {
+            profile = try await gateway.createDevelopmentProfile(bundleID: bundle.id, certificateID: certificate.id, deviceID: device.id)
+        } catch {
+            if Task.isCancelled || error is CancellationError { throw CancellationError() }
+            let originalError = error
+            let failure = error as? DeveloperServicesFailure
+            let reason = failure?.reason ?? (error as? DeveloperServicesError)
+            let conflict: Bool
+            switch reason {
+            case .rejected(409)?, .profileRejected(409, _)?: conflict = true
+            default: conflict = false
+            }
+            guard conflict, failure == nil || failure?.step == .createProfile else { throw error }
+            // Another request may have completed since the earlier list. Read
+            // once, validate exactly as normal, and never delete/recreate here.
+            do {
+                for candidate in try await gateway.listProfiles(bundleID: bundle.id) {
+                    try Task.checkCancellation()
+                    if let material = try? validate(candidate) { return material }
+                }
+            } catch {
+                if Task.isCancelled || error is CancellationError { throw CancellationError() }
+                // A failed lookup must not hide the actual creation rejection.
+            }
+            try Task.checkCancellation()
+            throw originalError
+        }
         try Task.checkCancellation()
         return try validate(profile)
     }

@@ -2,6 +2,27 @@ import XCTest
 @testable import LocSign
 
 final class DeveloperServicesProvisionerTests: XCTestCase {
+    func testUnresolvedProfileConflictPreservesErrorAndKeyWithoutRepeatingCreation() async throws {
+        let fixture = try setup(cached: true, missingProfile: true)
+        await fixture.gateway.setProfileConflict(availableAfterConflict: false)
+        do { _ = try await run(fixture); XCTFail("Conflict ignored") }
+        catch { XCTAssertEqual(error as? DeveloperServicesFailure, .init(step: .createProfile, reason: .rejected(409))) }
+        let mutations = await fixture.gateway.mutations
+        let saved = try await fixture.store.loadPending()
+        XCTAssertEqual(mutations, ["profile:bundle:cert:device"])
+        XCTAssertEqual(saved?.privateKeyPEM, try data("test-key", "pem"))
+        XCTAssertEqual(saved?.certificate?.id, "cert")
+    }
+
+    func testProfileConflictNeverAcceptsUnauthenticatedRequeryResult() async throws {
+        let fixture = try setup(cached: true, missingProfile: true, wrongProfile: true)
+        await fixture.gateway.setProfileConflict(availableAfterConflict: true)
+        do { _ = try await run(fixture); XCTFail("Unauthenticated profile accepted") }
+        catch { XCTAssertEqual(error as? DeveloperServicesFailure, .init(step: .createProfile, reason: .rejected(409))) }
+        let mutations = await fixture.gateway.mutations
+        XCTAssertEqual(mutations, ["profile:bundle:cert:device"])
+    }
+
     func testProfileConflictRequeriesAndUsesAuthenticatedProfileWithoutSecondCreation() async throws {
         let fixture = try setup(cached: true, missingProfile: true)
         await fixture.gateway.setProfileConflict(availableAfterConflict: true)

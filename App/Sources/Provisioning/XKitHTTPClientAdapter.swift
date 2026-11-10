@@ -51,6 +51,11 @@ final class XKitHTTPClientAdapter: HTTPClientProtocol, ClientTransport {
                        let rejection = DeveloperRegistrationDiagnostics.rejection(status: response.statusCode, data: data) {
                         throw rejection
                     }
+                    if urlRequest.url?.host == "developerservices2.apple.com",
+                       urlRequest.url?.path == "/services/v1/profiles",
+                       let rejection = DeveloperProfileDiagnostics.rejection(status: response.statusCode, data: data) {
+                        throw rejection
+                    }
                     return (typedResponse, nil)
                 }
                 throw ProvisioningNetworkError.httpStatus(response.statusCode)

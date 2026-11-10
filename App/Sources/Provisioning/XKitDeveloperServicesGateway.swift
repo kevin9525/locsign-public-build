@@ -123,10 +123,21 @@ struct XKitDeveloperServicesGateway: DeveloperServicesGateway {
         }
     }
     func createDevelopmentProfile(bundleID: String, certificateID: String, deviceID: String) async throws -> DeveloperProfile {
+        let name = "LocSign " + bundleID
+        do { return try await createProfile(name: name, bundleID: bundleID, certificateID: certificateID, deviceID: deviceID) }
+        catch let failure as DeveloperServicesFailure where failure.step == .createProfile && failure.reason == .profileRejected(409, .nameConflict) {
+            try Task.checkCancellation()
+            // Only the display name changes. App identity, devices, certificate,
+            // profile type, and all existing remote resources are preserved.
+            return try await createProfile(name: name + " " + UUID().uuidString, bundleID: bundleID,
+                certificateID: certificateID, deviceID: deviceID)
+        }
+    }
+    private func createProfile(name: String, bundleID: String, certificateID: String, deviceID: String) async throws -> DeveloperProfile {
         try await call(.createProfile) { api in
             let response = try await api.profilesCreateInstance(body: .json(.init(data: .init(
                 _type: .profiles,
-                attributes: .init(name: "LocSign " + bundleID, profileType: .init(.iosAppDevelopment)),
+                attributes: .init(name: name, profileType: .init(.iosAppDevelopment)),
                 relationships: .init(bundleId: .init(data: .init(_type: .bundleIds, id: bundleID)),
                     devices: .init(data: [.init(_type: .devices, id: deviceID)]),
                     certificates: .init(data: [.init(_type: .certificates, id: certificateID)]))))))
@@ -228,7 +239,8 @@ private struct DeveloperStatusMiddleware: ClientMiddleware {
         guard (200..<300).contains(result.0.status.code) else {
             // Injected transports may provide bodies; the live adapter already
             // classifies and discards them before they reach OpenAPI errors.
-            if request.path?.split(separator: "?").first == "/v1/bundleIds", let body = result.1 {
+            let path = request.path?.split(separator: "?").first
+            if (path == "/v1/bundleIds" || path == "/v1/profiles"), let body = result.1 {
                 let data: Data?
                 do {
                     data = try await body.reduce(into: Data()) {
@@ -239,8 +251,11 @@ private struct DeveloperStatusMiddleware: ClientMiddleware {
                     if Task.isCancelled || error is CancellationError { throw CancellationError() }
                     data = nil
                 }
-                if let data, let rejection = DeveloperRegistrationDiagnostics.rejection(status: result.0.status.code, data: data) {
-                    throw rejection
+                if let data {
+                    let rejection = path == "/v1/profiles"
+                        ? DeveloperProfileDiagnostics.rejection(status: result.0.status.code, data: data)
+                        : DeveloperRegistrationDiagnostics.rejection(status: result.0.status.code, data: data)
+                    if let rejection { throw rejection }
                 }
             }
             throw DeveloperServicesError.rejected(result.0.status.code)
