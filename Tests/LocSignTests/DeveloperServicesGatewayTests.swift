@@ -5,6 +5,19 @@ import OpenAPIRuntime
 @testable import LocSign
 
 final class DeveloperServicesGatewayTests: XCTestCase {
+    func testCancellationOnNameConflictPreventsSecondProfilePOST() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setProfileConflicts([["code": "ENTITY_ERROR.ATTRIBUTE.INVALID", "detail": "A profile with name 'test' already exists on this team.", "source": ["pointer": "/data/attributes/name"]]])
+        await transport.setCancelOnProfileConflict()
+        let subject = gateway(transport)
+        let task = Task { try await subject.createDevelopmentProfile(bundleID: "bundle", certificateID: "cert", deviceID: "device") }
+        do { _ = try await task.value; XCTFail("Cancellation ignored") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        let requests = await transport.requests
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(requests.first?.override, "POST")
+    }
+
     func testUnclassifiedProfileConflictNeverRetriesCreation() async throws {
         let transport = DeveloperAPIFixture()
         await transport.setProfileConflicts([["code": "UNKNOWN", "detail": "synthetic-sensitive-response"]])
@@ -556,6 +569,8 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
     private var transportFailure = false
     private var cancellation = false
     private var profileConflicts: [[String: Any]] = []
+    private var cancelOnProfileConflict = false
+    func setCancelOnProfileConflict() { cancelOnProfileConflict = true }
     func setProfileConflicts(_ values: [[String: Any]]) { profileConflicts = values }
     func setMalformedResponse() { malformedResponse = true }
     func setTransportFailure() { transportFailure = true }
@@ -600,6 +615,7 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
         requests.append(.init(host: baseURL.host, path: path, token: request.headerFields[.init("X-Apple-GS-Token")!], team: team, body: String(data: bytes, encoding: .utf8), override: method))
         if path == "/v1/profiles", method == "POST", !profileConflicts.isEmpty {
             let error = profileConflicts.removeFirst()
+            if cancelOnProfileConflict { withUnsafeCurrentTask { $0?.cancel() } }
             return (.init(status: .conflict, headerFields: [.contentType: "application/json"]),
                 HTTPBody(try JSONSerialization.data(withJSONObject: ["errors": [error]])))
         }

@@ -2,6 +2,32 @@ import XCTest
 @testable import LocSign
 
 final class DeveloperServicesProvisionerTests: XCTestCase {
+    func testFailedProfileRequeryPreservesClassifiedCreationRejection() async throws {
+        let fixture = try setup(cached: true, missingProfile: true)
+        await fixture.gateway.setProfileConflict(availableAfterConflict: false, reason: .profileRejected(409, .existingProfile))
+        await fixture.gateway.setProfileRequeryError(DeveloperServicesError.network)
+        do { _ = try await run(fixture); XCTFail("Conflict ignored") }
+        catch { XCTAssertEqual(error as? DeveloperServicesFailure, .init(step: .createProfile, reason: .profileRejected(409, .existingProfile))) }
+        let reads = await fixture.gateway.profileReads
+        let mutations = await fixture.gateway.mutations
+        XCTAssertEqual(reads, 2)
+        XCTAssertEqual(mutations, ["profile:bundle:cert:device"])
+    }
+
+    func testProfileRequeryCancellationPropagatesWithoutAnotherCreation() async throws {
+        let fixture = try setup(cached: true, missingProfile: true)
+        await fixture.gateway.setProfileConflict(availableAfterConflict: false)
+        await fixture.gateway.setProfileRequeryError(CancellationError())
+        do { _ = try await run(fixture); XCTFail("Cancellation ignored") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        let reads = await fixture.gateway.profileReads
+        let mutations = await fixture.gateway.mutations
+        let saved = try await fixture.store.loadPending()
+        XCTAssertEqual(reads, 2)
+        XCTAssertEqual(mutations, ["profile:bundle:cert:device"])
+        XCTAssertEqual(saved?.privateKeyPEM, try data("test-key", "pem"))
+    }
+
     func testUnresolvedProfileConflictPreservesErrorAndKeyWithoutRepeatingCreation() async throws {
         let fixture = try setup(cached: true, missingProfile: true)
         await fixture.gateway.setProfileConflict(availableAfterConflict: false)
@@ -25,7 +51,7 @@ final class DeveloperServicesProvisionerTests: XCTestCase {
 
     func testProfileConflictRequeriesAndUsesAuthenticatedProfileWithoutSecondCreation() async throws {
         let fixture = try setup(cached: true, missingProfile: true)
-        await fixture.gateway.setProfileConflict(availableAfterConflict: true)
+        await fixture.gateway.setProfileConflict(availableAfterConflict: true, reason: .profileRejected(409, .existingProfile))
         let material = try await run(fixture)
         XCTAssertEqual(material.profileData, try data("profile-valid", "mobileprovision"))
         let mutations = await fixture.gateway.mutations
@@ -397,11 +423,13 @@ private actor ProvisioningGatewayFixture: DeveloperServicesGateway {
     private var cancelOnIssuance = false
     private var issuanceFailure: DeveloperServicesError?
     private var issuanceFailureStep: DeveloperServicesStep?
-    private var profileConflict = false
+    private var profileConflict: DeveloperServicesError?
     private var profileAvailableAfterConflict = false
+    private var profileRequeryError: (any Error)?
     private(set) var profileReads = 0
-    func setProfileConflict(availableAfterConflict: Bool) {
-        profileConflict = true
+    func setProfileRequeryError(_ error: any Error) { profileRequeryError = error }
+    func setProfileConflict(availableAfterConflict: Bool, reason: DeveloperServicesError = .rejected(409)) {
+        profileConflict = reason
         profileAvailableAfterConflict = availableAfterConflict
     }
     var detailReads: [String] = []
@@ -457,12 +485,13 @@ private actor ProvisioningGatewayFixture: DeveloperServicesGateway {
     func revokeCertificate(id: String) async throws { mutations.append("revoke:" + id); certs.removeAll { $0.id == id } }
     func listProfiles(bundleID: String) async throws -> [DeveloperProfile] {
         profileReads += 1
+        if profileReads > 1, let error = profileRequeryError { throw error }
         if profileAvailableAfterConflict && mutations.contains("profile:bundle:cert:device") { return [profile] }
         return missingProfile ? [] : [profile]
     }
     func createDevelopmentProfile(bundleID: String, certificateID: String, deviceID: String) async throws -> DeveloperProfile {
         mutations.append("profile:\(bundleID):\(certificateID):\(deviceID)")
-        if profileConflict { throw DeveloperServicesFailure(step: .createProfile, reason: .rejected(409)) }
+        if let profileConflict { throw DeveloperServicesFailure(step: .createProfile, reason: profileConflict) }
         if failProfile { throw DeveloperServicesError.rejected(503) }
         return profile
     }
