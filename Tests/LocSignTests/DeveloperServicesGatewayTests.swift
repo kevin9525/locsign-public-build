@@ -5,6 +5,26 @@ import OpenAPIRuntime
 @testable import LocSign
 
 final class DeveloperServicesGatewayTests: XCTestCase {
+    func testSeparateProfileCreationsUseDistinctNamesWithSameSigningIdentity() async throws {
+        let transport = DeveloperAPIFixture()
+        let firstGateway = try gateway(transport)
+        let secondGateway = try gateway(transport)
+        _ = try await firstGateway.createDevelopmentProfile(bundleID: "bundle", certificateID: "cert", deviceID: "device")
+        _ = try await secondGateway.createDevelopmentProfile(bundleID: "bundle", certificateID: "cert", deviceID: "device")
+        let requests = await transport.requests
+        XCTAssertEqual(requests.count, 2)
+        let bodies = try requests.map { try XCTUnwrap(JSONSerialization.jsonObject(with: Data(XCTUnwrap($0.body).utf8)) as? [String: Any]) }
+        let first = try XCTUnwrap(bodies[0]["data"] as? [String: Any])
+        let second = try XCTUnwrap(bodies[1]["data"] as? [String: Any])
+        let firstAttributes = try XCTUnwrap(first["attributes"] as? [String: Any])
+        let secondAttributes = try XCTUnwrap(second["attributes"] as? [String: Any])
+        XCTAssertNotEqual(firstAttributes["name"] as? String, secondAttributes["name"] as? String)
+        XCTAssertEqual(firstAttributes["profileType"] as? String, "IOS_APP_DEVELOPMENT")
+        XCTAssertEqual(secondAttributes["profileType"] as? String, "IOS_APP_DEVELOPMENT")
+        XCTAssertEqual(first["relationships"] as? NSDictionary, second["relationships"] as? NSDictionary)
+        XCTAssertTrue(requests.allSatisfy { $0.path == "/v1/profiles" && $0.override == "POST" })
+    }
+
     func testCancellationOnNameConflictPreventsSecondProfilePOST() async throws {
         let transport = DeveloperAPIFixture()
         await transport.setProfileConflicts([["code": "ENTITY_ERROR.ATTRIBUTE.INVALID", "detail": "A profile with name 'test' already exists on this team.", "source": ["pointer": "/data/attributes/name"]]])

@@ -2,6 +2,16 @@ import XCTest
 @testable import LocSign
 
 final class DeveloperProfileDiagnosticsTests: XCTestCase {
+    func testUnknownConflictKeepsSafeCodeAndCluesWithoutServerValues() throws {
+        let data = try payload(code: "ENTITY_ERROR", detail: "Multiple profiles found with the name 'synthetic-private@example.com'. Please remove the duplicate profiles and try again.", pointer: "")
+        let error = try XCTUnwrap(DeveloperProfileDiagnostics.rejection(status: 409, data: data))
+        XCTAssertTrue(error.localizedDescription.contains("ENTITY_ERROR"))
+        XCTAssertTrue(error.localizedDescription.contains("重复"))
+        XCTAssertTrue(error.localizedDescription.contains("名称"))
+        XCTAssertFalse(String(describing: error).contains("synthetic-private"))
+        XCTAssertNotEqual(error, .profileRejected(409, .nameConflict))
+    }
+
     func testOnlyExplicitNameCollisionAuthorizesNameRetry() throws {
         let response = try payload(code: "ENTITY_ERROR.ATTRIBUTE.INVALID",
             detail: "A profile with name 'secret@example.com' already exists on this team.", pointer: "/data/attributes/name")
