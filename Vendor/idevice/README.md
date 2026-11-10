@@ -26,6 +26,14 @@ one dedicated Thread. An expired operation drops its Rust future before returnin
 an error; the adapter then releases the session on that same Thread. Calls use
 30 seconds except image-mounter operations (120 seconds). The build runs tests
 which verify timeout drops the future before the caller can release resources.
+The source patch also removes an erroneous provider release from the upstream
+`lockdownd_connect` and `image_mounter_connect` error branches. Both APIs borrow
+the provider; the caller remains its owner after success, failure, or timeout.
+Tests inject a failing provider into those real FFI functions (and the CoreDevice
+proxy constructor), verify it survives the failed call, then release it once.
+Release LTO and embedded bitcode are disabled so the app's Apple linker consumes
+native objects. Symbol inspection uses Rust 1.94.0's matching `llvm-nm`, because
+Xcode's older LLVM cannot parse all standard-library bitcode members.
 A location
 set must retain its connection and is resent every five seconds. App suspension,
 VPN loss, or a failed request means location state is unknown until a new device

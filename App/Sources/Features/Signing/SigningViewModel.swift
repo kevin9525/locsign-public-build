@@ -291,28 +291,28 @@ final class SigningViewModel: ObservableObject {
         try check(operation)
         var recordID: UUID?
         do {
-        if let library, let ipaURL, let managedIdentity, let managedMaterial {
-            let device = try await deviceProbe.deviceUDID(host: host, pairingData: pairing)
-            try check(operation)
-            guard device == managedIdentity.deviceUDID else { throw LocSignError.install("配对设备与签名记录不一致，请重新签名") }
-            stage = "正在保存可续签原 IPA…"
-            recordID = try await library.prepare(source: ipaURL, name: ipaName, identity: managedIdentity, material: managedMaterial)
-            try check(operation)
-            stage = "正在上传并安装…"
-        }
-        try await installer.install(ipaURL: output, host: host, pairingData: pairing) { [weak self] value in
-            await MainActor.run {
-                guard let self, self.generation == operation else { return }
-                self.installProgress = value
+            if let library, let ipaURL, let managedIdentity, let managedMaterial {
+                let device = try await deviceProbe.deviceUDID(host: host, pairingData: pairing)
+                try check(operation)
+                guard device == managedIdentity.deviceUDID else { throw LocSignError.install("配对设备与签名记录不一致，请重新签名") }
+                stage = "正在保存可续签原 IPA…"
+                recordID = try await library.prepare(source: ipaURL, name: ipaName, identity: managedIdentity, material: managedMaterial)
+                try check(operation)
+                stage = "正在上传并安装…"
             }
-        }
-        try check(operation)
-        installSucceeded = true
-        installProgress = 1
-        if let recordID, managedIdentity?.signingBundleID != Bundle.main.bundleIdentifier {
-            do { try library?.confirmInstallation(id: recordID) }
-            catch { self.error = "安装已完成，但保存应用记录失败：" + safeMessage(error) }
-        }
+            try await installer.install(ipaURL: output, host: host, pairingData: pairing) { [weak self] value in
+                await MainActor.run {
+                    guard let self, self.generation == operation else { return }
+                    self.installProgress = value
+                }
+            }
+            try check(operation)
+            installSucceeded = true
+            installProgress = 1
+            if let recordID, managedIdentity?.signingBundleID != Bundle.main.bundleIdentifier {
+                do { try library?.confirmInstallation(id: recordID) }
+                catch { self.error = "安装已完成，但保存应用记录失败：" + safeMessage(error) }
+            }
         } catch {
             if let recordID {
                 try? library?.fail(id: recordID, message: safeMessage(error),

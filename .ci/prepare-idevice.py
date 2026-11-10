@@ -2,6 +2,7 @@
 """Prepare checksum-pinned idevice and iOS 18 DDI assets; no device connection."""
 import argparse
 import hashlib
+import http.client
 from pathlib import Path, PurePosixPath
 import plistlib
 import shutil
@@ -60,7 +61,7 @@ def download(url, destination, size, digest):
                     raise ValueError("Insecure dependency redirect")
                 write_verified(response, destination, size, digest)
             return
-        except (OSError, ValueError):
+        except (OSError, ValueError, http.client.HTTPException):
             if attempt == 2:
                 raise
 

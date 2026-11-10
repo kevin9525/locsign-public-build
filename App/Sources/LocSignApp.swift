@@ -23,9 +23,9 @@ final class ApplicationServices: ObservableObject {
         background.register()
     }
     func activate() async {
+        location.markForeground()
         guard !activating, installation.operationID == nil else { return }
         activating = true
-        location.markForeground()
         defer { activating = false }
         await account.restore()
         await background.foreground()

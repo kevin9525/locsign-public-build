@@ -65,6 +65,11 @@ final class RenewalBackgroundService {
     func requestNotifications() async -> Bool {
         (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])) ?? false
     }
+    func requestNotificationsIfNeeded() async {
+        guard renewal.enabled else { return }
+        let authorization = await UNUserNotificationCenter.current().notificationSettings()
+        if authorization.authorizationStatus == .notDetermined { _ = await requestNotifications() }
+    }
     func schedule() {
         BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.identifier)
         guard renewal.enabled else { return }

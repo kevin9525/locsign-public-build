@@ -6,7 +6,9 @@ struct ThirdPartyLicensesView: View {
               let text = try? String(contentsOf: url, encoding: .utf8) else {
             return "无法读取第三方许可，请查看项目 docs/dependencies 中的许可清单。"
         }
-        return text
+        let nativeURL = Bundle.main.url(forResource: "LocationDDI", withExtension: nil)?.appendingPathComponent("ThirdPartyNotices.txt")
+        let native = nativeURL.flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
+        return text + (native.isEmpty ? "" : "\n\n" + native)
     }()
 
     var body: some View {

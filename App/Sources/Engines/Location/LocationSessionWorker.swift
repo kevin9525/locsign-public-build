@@ -32,25 +32,29 @@ final class LocationSessionWorker: @unchecked Sendable {
 
     deinit { state.shutdown() }
 
-    func setFailureHandler(_ handler: @escaping @Sendable (String) -> Void) { state.setFailureHandler(handler) }
-
     func set(_ coordinate: LocationCoordinate, host: String, pairingData: Data, ddiDirectory: URL?,
-             healthCheck: @escaping () throws -> Void) async throws {
-        try await perform { state in
+             healthCheck: @escaping () throws -> Void,
+             onFailure: @escaping @Sendable (String) -> Void = { _ in }) async throws {
+        try await perform { state, checkCancellation in
             try healthCheck()
             if state.session == nil { state.session = try state.makeSession(host, pairingData, ddiDirectory) }
+            try checkCancellation()
             try state.session?.apply(coordinate)
             state.coordinate = coordinate
             state.healthCheck = healthCheck
+            // Install with the accepted coordinate on the owning Thread. A
+            // resend already in flight retains its previous request's handler.
+            state.failureHandler = onFailure
             state.nextResend = Date().addingTimeInterval(5)
         }
     }
 
     func clear(host: String, pairingData: Data, ddiDirectory: URL?, healthCheck: @escaping () throws -> Void) async throws {
-        try await perform { state in
+        try await perform { state, checkCancellation in
             defer { state.close() }
             try healthCheck()
             if state.session == nil { state.session = try state.makeSession(host, pairingData, ddiDirectory) }
+            try checkCancellation()
             try state.session?.restore()
         }
     }
@@ -61,7 +65,7 @@ final class LocationSessionWorker: @unchecked Sendable {
         }
     }
 
-    private func perform(_ action: @escaping (State) throws -> Void) async throws {
+    private func perform(_ action: @escaping (State, () throws -> Void) throws -> Void) async throws {
         let cancellation = CancellationFlag()
         try await withTaskCancellationHandler {
             try Task.checkCancellation()
@@ -69,7 +73,7 @@ final class LocationSessionWorker: @unchecked Sendable {
                 state.enqueue { state in
                     do {
                         try cancellation.check()
-                        try action(state)
+                        try action(state, cancellation.check)
                         try cancellation.check()
                         continuation.resume()
                     } catch {
@@ -107,15 +111,13 @@ final class LocationSessionWorker: @unchecked Sendable {
         func enqueue(_ job: @escaping (State) -> Void) {
             condition.lock(); jobs.append(job); condition.signal(); condition.unlock()
         }
-        func setFailureHandler(_ handler: @escaping @Sendable (String) -> Void) {
-            condition.lock(); failureHandler = handler; condition.unlock()
-        }
         func shutdown() { condition.lock(); stopping = true; condition.signal(); condition.unlock() }
         func close() {
             session?.close()
             session = nil
             coordinate = nil
             healthCheck = nil
+            failureHandler = nil
             nextResend = .distantFuture
         }
         func run() {

@@ -34,7 +34,6 @@ Anisette 默认地址为 `https://mac-ani.jkcoxson.com`。使用前需同意 UUI
 
 ```sh
 brew install xcodegen
-python3 .ci/prepare-idevice.py
 python3 .ci/build-idevice.py
 xcodegen generate
 xcodebuild test -project LocSign.xcodeproj -scheme LocSign \

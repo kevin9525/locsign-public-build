@@ -20,7 +20,10 @@ struct AppsView: View {
             List {
                 Section {
                     Toggle("自动续签", isOn: $renewal.enabled)
-                        .onChange(of: renewal.enabled) { _, _ in background.schedule() }
+                        .onChange(of: renewal.enabled) { _, _ in
+                            background.schedule()
+                            Task { await background.requestNotificationsIfNeeded() }
+                        }
                     Button("开启续签失败通知") {
                         Task {
                             let allowed = await background.requestNotifications()
@@ -96,6 +99,7 @@ struct AppsView: View {
                 }
             }
             .navigationTitle("App 管理")
+            .task { await background.requestNotificationsIfNeeded() }
             .onChange(of: settings.host) { _, _ in deviceApps = nil }
             .onChange(of: settings.pairing) { _, _ in deviceApps = nil }
             .alert("清除本地记录与原 IPA？", isPresented: Binding(get: { removal != nil }, set: { if !$0 { removal = nil } })) {

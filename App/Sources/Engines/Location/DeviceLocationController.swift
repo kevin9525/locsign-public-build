@@ -20,6 +20,13 @@ enum LocationControlError: LocalizedError {
     var errorDescription: String? { if case .message(let value) = self { return value }; return nil }
 }
 
+/// Only a failure from the latest explicit request may invalidate its session.
+struct LocationFailureRevision {
+    private(set) var current = UUID()
+    mutating func advance() { current = UUID() }
+    func accepts(_ revision: UUID) -> Bool { revision == current }
+}
+
 @MainActor
 protocol DeviceLocationControlling: AnyObject {
     var onSessionFailure: (@Sendable (String) -> Void)? { get set }
@@ -36,21 +43,31 @@ final class DeviceLocationController: DeviceLocationControlling {
     private var lockdown: LockdownSession?
     private var identity: String?
     private var generation = UUID()
+    private var failureRevision = LocationFailureRevision()
     private var busy = false
 
     init() { }
 
     func set(_ coordinate: LocationCoordinate, host: String, pairingData: Data) async throws {
         guard !busy else { throw LocationControlError.message("定位操作尚未结束，请稍候。") }
+        failureRevision.advance()
         busy = true
         defer { busy = false }
         do {
             let heartbeat = try await connect(host: host, pairingData: pairingData)
             let operationGeneration = generation
+            let revision = failureRevision.current
             try Task.checkCancellation()
             try await worker.set(coordinate, host: host, pairingData: pairingData,
                                  ddiDirectory: Bundle.main.url(forResource: "LocationDDI", withExtension: nil),
-                                 healthCheck: { try heartbeat.check() })
+                                 healthCheck: { try heartbeat.check() }, onFailure: { [weak self] message in
+                Task { @MainActor [weak self] in
+                    guard let self, self.generation == operationGeneration,
+                          self.failureRevision.accepts(revision) else { return }
+                    self.onSessionFailure?(message)
+                    await self.disconnect()
+                }
+            })
             try Task.checkCancellation()
             guard generation == operationGeneration else { throw CancellationError() }
         } catch {
@@ -61,6 +78,7 @@ final class DeviceLocationController: DeviceLocationControlling {
 
     func clear(host: String, pairingData: Data) async throws {
         guard !busy else { throw LocationControlError.message("定位操作尚未结束，请稍候。") }
+        failureRevision.advance()
         busy = true
         defer { busy = false }
         do {
@@ -81,14 +99,17 @@ final class DeviceLocationController: DeviceLocationControlling {
 
     func disconnect() async {
         generation = UUID()
+        failureRevision.advance()
         identity = nil
+        // Detach before awaiting: an older disconnect must not close a newer session.
+        let previousHeartbeat = heartbeat
+        let previousLockdown = lockdown
+        heartbeat = nil
+        lockdown = nil
         // Worker waits for any active native call before releasing its handles.
         await worker.disconnect()
-        let previousHeartbeat = heartbeat
-        heartbeat = nil
         await previousHeartbeat?.stop()
-        lockdown?.close()
-        lockdown = nil
+        previousLockdown?.close()
     }
 
     private func connect(host: String, pairingData: Data) async throws -> DeviceHeartbeat {
@@ -109,13 +130,6 @@ final class DeviceLocationController: DeviceLocationControlling {
         try await heartbeat.start()
         guard generation == currentGeneration else { throw CancellationError() }
         identity = key
-        worker.setFailureHandler { [weak self] message in
-            Task { @MainActor [weak self] in
-                guard let self, self.generation == currentGeneration else { return }
-                self.onSessionFailure?(message)
-                await self.disconnect()
-            }
-        }
         return heartbeat
     }
 }

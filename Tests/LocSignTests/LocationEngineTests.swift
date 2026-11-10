@@ -2,6 +2,17 @@ import XCTest
 @testable import LocSign
 
 final class LocationEngineTests: XCTestCase {
+    func testDelayedFailureCannotInvalidateNewExplicitRequest() {
+        var revision = LocationFailureRevision()
+        let oldPeriodicFailure = revision.current
+        revision.advance() // A new explicit set starts before the failure callback arrives.
+        let newRequest = revision.current
+        XCTAssertFalse(revision.accepts(oldPeriodicFailure))
+        XCTAssertTrue(revision.accepts(newRequest))
+        revision.advance() // Clear/disconnect also invalidates pending failures.
+        XCTAssertFalse(revision.accepts(newRequest))
+    }
+
     func testCoordinatesRejectNonfiniteAndOutOfRangeValues() throws {
         for pair in [(Double.nan, 0.0), (.infinity, 0), (0, -.infinity), (90.001, 0), (-90.001, 0), (0, 180.001), (0, -180.001)] {
             XCTAssertThrowsError(try LocationCoordinate(latitude: pair.0, longitude: pair.1))

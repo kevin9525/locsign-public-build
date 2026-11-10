@@ -11,7 +11,6 @@ import re
 import shutil
 import subprocess
 import tarfile
-import tempfile
 
 spec = importlib.util.spec_from_file_location("prepare_idevice", Path(__file__).with_name("prepare-idevice.py"))
 prepare = importlib.util.module_from_spec(spec)
@@ -59,7 +58,9 @@ where F: Future<Output = Result<T, IdeviceError>>, T: 'static
 #[cfg(test)]
 mod locsign_timeout_tests {
     use super::*;
-    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    use std::{pin::Pin, sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}}};
+    use idevice::{Idevice, pairing_file::PairingFile, provider::IdeviceProvider};
+    use crate::provider::{IdeviceProviderHandle, idevice_provider_free};
 
     struct DropMarker(Arc<AtomicBool>);
     impl Drop for DropMarker { fn drop(&mut self) { self.0.store(true, Ordering::SeqCst); } }
@@ -92,6 +93,55 @@ mod locsign_timeout_tests {
         let result: Result<(), IdeviceError> = run_sync_local_timeout(async { Err(IdeviceError::NotFound) });
         assert!(matches!(result, Err(IdeviceError::NotFound)));
     }
+
+    #[derive(Debug)]
+    struct FailingProvider { drops: Arc<AtomicUsize> }
+
+    impl Drop for FailingProvider {
+        fn drop(&mut self) { self.drops.fetch_add(1, Ordering::SeqCst); }
+    }
+
+    impl IdeviceProvider for FailingProvider {
+        fn connect(&self, _port: u16) -> Pin<Box<dyn Future<Output = Result<Idevice, IdeviceError>> + Send>> {
+            Box::pin(async { Err(IdeviceError::NotFound) })
+        }
+        fn label(&self) -> &str { "locsign-ownership-regression" }
+        fn get_pairing_file(&self) -> Pin<Box<dyn Future<Output = Result<PairingFile, IdeviceError>> + Send>> {
+            Box::pin(async { Err(IdeviceError::NotFound) })
+        }
+    }
+
+    fn verify_failed_connect_borrows_provider<T>(
+        connect: unsafe extern "C" fn(*mut IdeviceProviderHandle, *mut *mut T) -> *mut crate::IdeviceFfiError,
+    ) {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let provider = Box::into_raw(Box::new(IdeviceProviderHandle(Box::new(FailingProvider { drops: drops.clone() }))));
+        let mut client = std::ptr::null_mut();
+        let error = unsafe { connect(provider, &mut client) };
+        assert!(!error.is_null(), "Injected connection failure must be surfaced");
+        unsafe { crate::idevice_error_free(error) };
+        assert!(client.is_null());
+        // This assertion fails on upstream before attempting to free its dangling
+        // pointer, so the regression test itself never intentionally double-frees.
+        assert_eq!(drops.load(Ordering::SeqCst), 0, "A failed constructor consumed the caller's provider");
+        unsafe { idevice_provider_free(provider) };
+        assert_eq!(drops.load(Ordering::SeqCst), 1, "The caller must release the provider exactly once");
+    }
+
+    #[test]
+    fn failed_lockdownd_connect_preserves_provider_ownership() {
+        verify_failed_connect_borrows_provider(crate::lockdown::lockdownd_connect);
+    }
+
+    #[test]
+    fn failed_image_mounter_connect_preserves_provider_ownership() {
+        verify_failed_connect_borrows_provider(crate::mobile_image_mounter::image_mounter_connect);
+    }
+
+    #[test]
+    fn failed_core_device_proxy_connect_preserves_provider_ownership() {
+        verify_failed_connect_borrows_provider(crate::core_device_proxy::core_device_proxy_connect);
+    }
 }
 '''
 
@@ -121,6 +171,17 @@ def patch_source(root):
             source, count = re.subn(r"\b" + old + r"\b", new, source)
             if count < 2:
                 raise ValueError(f"Missing expected runner calls in {filename}")
+        if filename in ("lockdown.rs", "mobile_image_mounter.rs"):
+            # Both constructors borrow the provider. Upstream v0.1.68 wrongly
+            # frees that borrow on Err, leaving the caller with a dangling owner.
+            # Match the exact branch once so a revision change cannot broaden it.
+            invalid_drop = """        Err(e) => {
+            let _ = unsafe { Box::from_raw(provider) };
+            ffi_err!(e)
+        }"""
+            if source.count(invalid_drop) != 1:
+                raise ValueError(f"Pinned provider-ownership error branch changed in {filename}")
+            source = source.replace(invalid_drop, "        Err(e) => ffi_err!(e),")
         file.write_text(source, encoding="utf-8")
     file = root / "ffi/src/adapter.rs"
     source = file.read_text(encoding="utf-8")
@@ -221,7 +282,11 @@ def main():
         raise RuntimeError("Production idevice build requires macOS and Xcode")
     run(["rustup", "toolchain", "install", TOOLCHAIN, "--profile", "minimal"], source)
     run(["rustup", "target", "add", "--toolchain", TOOLCHAIN, *TARGETS], source)
-    env = dict(os.environ, CARGO_TARGET_DIR=str(output / "cargo-target"))
+    run(["rustup", "component", "add", "--toolchain", TOOLCHAIN, "llvm-tools-preview"], source)
+    # Apple's LLVM is older than the pinned Rust LLVM. Export native Mach-O
+    # objects, rather than making the final Apple linker consume Rust LTO IR.
+    env = dict(os.environ, CARGO_TARGET_DIR=str(output / "cargo-target"), CARGO_PROFILE_RELEASE_LTO="false")
+    env["RUSTFLAGS"] = (env.get("RUSTFLAGS", "") + " -C embed-bitcode=no").strip()
     run(["cargo", "+" + TOOLCHAIN, "test", "--locked", "-p", "idevice-ffi", "--lib", "--no-default-features", "--features", FEATURES,
          "locsign_timeout_tests", "--", "--test-threads=1"], source, env)
     for target in TARGETS:
@@ -241,7 +306,11 @@ def main():
     run(["xcodebuild", "-create-xcframework", "-library", str(output / "cargo-target" / TARGETS[0] / "release/libidevice_ffi.a"),
          "-headers", str(headers), "-library", str(simulator), "-headers", str(headers), "-output", str(framework)], source)
     # Check that the minimal feature set exports every app-facing symbol.
-    exports = subprocess.check_output(["nm", "-gU", str(output / "cargo-target" / TARGETS[0] / "release/libidevice_ffi.a")], text=True)
+    sysroot = Path(subprocess.check_output(["rustc", "+" + TOOLCHAIN, "--print", "sysroot"], text=True).strip())
+    compiler = subprocess.check_output(["rustc", "+" + TOOLCHAIN, "-vV"], text=True)
+    host = next(line.removeprefix("host: ") for line in compiler.splitlines() if line.startswith("host: "))
+    llvm_nm = sysroot / "lib/rustlib" / host / "bin/llvm-nm"
+    exports = subprocess.check_output([str(llvm_nm), "--extern-only", "--defined-only", str(output / "cargo-target" / TARGETS[0] / "release/libidevice_ffi.a")], text=True)
     for name in ["location_simulation_set", "location_simulation_clear", "image_mounter_mount_personalized", "plist_free", "plist_get_uint_val", "rsd_handshake_new", "core_device_proxy_connect"]:
         if not re.search(r"\b_" + name + r"$", exports, re.MULTILINE):
             raise RuntimeError("Required symbol is missing: " + name)
@@ -253,6 +322,7 @@ def main():
         "build_script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "features": FEATURES, "rust_toolchain": TOOLCHAIN, "targets": TARGETS, "operation_timeout_seconds": 30,
         "image_mounter_timeout_seconds": 120,
+        "release_lto": False, "embed_bitcode": False,
     }, indent=2))
     print("Built bounded idevice and verified DDI assets:", output)
 
