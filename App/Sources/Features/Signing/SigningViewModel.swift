@@ -45,6 +45,9 @@ final class SigningViewModel: ObservableObject {
         }
     }
     @Published var error: String?
+    private let library: ManagedAppLibrary?
+    private var managedIdentity: ManagedApp.Identity?
+    private var managedMaterial: ProvisioningMaterial?
     private var ipaURL: URL?
     private var identityData: Data?
     private var isPEM = false
@@ -62,9 +65,10 @@ final class SigningViewModel: ObservableObject {
     private var outputIsProvisioned = false
     private var identifierTask: Task<String, Error>?
 
-    init(settings: InstallationSettings? = nil, installer: any IPAInstalling = InstallCoordinator(), deviceProbe: any PairedDeviceProbing = ProvisioningDeviceProbe(),
+    init(settings: InstallationSettings? = nil, library: ManagedAppLibrary? = nil, installer: any IPAInstalling = InstallCoordinator(), deviceProbe: any PairedDeviceProbing = ProvisioningDeviceProbe(),
          inspectBundleID: @escaping @Sendable (URL) throws -> String = { try ProvisioningIPAPreflight().inspect($0).bundleID },
          materialSigner: (@MainActor (URL, ProvisioningMaterial) async throws -> URL)? = nil) {
+        self.library = library
         self.settings = settings
         self.inspectBundleID = inspectBundleID
         self.installer = installer
@@ -237,6 +241,11 @@ final class SigningViewModel: ObservableObject {
             profileExpiry = material.profileExpiry
             certificateExpiry = material.certificateExpiry
             if let originalBundle {
+                managedIdentity = .init(appleID: ProvisioningKeychain.normalize(account.appleID), teamID: teamID,
+                    deviceUDID: currentDevice, originalBundleID: originalBundle, signingBundleID: target ?? originalBundle)
+                managedMaterial = material
+            }
+            if let originalBundle {
                 try settings?.saveSigningChoice(.init(personal: usesPersonalBundleID, identifier: target ?? ""),
                     bundleID: originalBundle, teamID: teamID)
             }
@@ -280,6 +289,17 @@ final class SigningViewModel: ObservableObject {
 
     private func upload(_ output: URL, host: String, pairing: Data, operation: UUID) async throws {
         try check(operation)
+        var recordID: UUID?
+        do {
+        if let library, let ipaURL, let managedIdentity, let managedMaterial {
+            let device = try await deviceProbe.deviceUDID(host: host, pairingData: pairing)
+            try check(operation)
+            guard device == managedIdentity.deviceUDID else { throw LocSignError.install("配对设备与签名记录不一致，请重新签名") }
+            stage = "正在保存可续签原 IPA…"
+            recordID = try await library.prepare(source: ipaURL, name: ipaName, identity: managedIdentity, material: managedMaterial)
+            try check(operation)
+            stage = "正在上传并安装…"
+        }
         try await installer.install(ipaURL: output, host: host, pairingData: pairing) { [weak self] value in
             await MainActor.run {
                 guard let self, self.generation == operation else { return }
@@ -289,6 +309,17 @@ final class SigningViewModel: ObservableObject {
         try check(operation)
         installSucceeded = true
         installProgress = 1
+        if let recordID, managedIdentity?.signingBundleID != Bundle.main.bundleIdentifier {
+            do { try library?.confirmInstallation(id: recordID) }
+            catch { self.error = "安装已完成，但保存应用记录失败：" + safeMessage(error) }
+        }
+        } catch {
+            if let recordID {
+                try? library?.fail(id: recordID, message: safeMessage(error),
+                    preservePending: managedIdentity?.signingBundleID == Bundle.main.bundleIdentifier)
+            }
+            throw error
+        }
     }
 
     func cancelProvisioning() async {
@@ -435,6 +466,8 @@ final class SigningViewModel: ObservableObject {
         if let outputURL { try? FileManager.default.removeItem(at: outputURL) }
         outputURL = nil
         outputIsProvisioned = false
+        managedIdentity = nil
+        managedMaterial = nil
         profileExpiry = nil
         certificateExpiry = nil
         installProgress = 0

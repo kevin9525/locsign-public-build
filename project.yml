@@ -7,8 +7,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.3.2"
-    CURRENT_PROJECT_VERSION: "18"
+    MARKETING_VERSION: "0.4.0"
+    CURRENT_PROJECT_VERSION: "19"
     GENERATE_INFOPLIST_FILE: NO
 packages:
   OpenSSL:
@@ -34,7 +34,13 @@ targets:
       - path: App/Sources
       - path: App/Resources
         buildPhase: resources
+      - path: build/idevice/LocationDDI
+        type: folder
+        buildPhase: resources
     dependencies:
+      - framework: build/idevice/IDevice.xcframework
+        embed: false
+        link: true
       - package: OpenSSL
       - package: Zsign
       - package: ZIPFoundation
@@ -53,6 +59,8 @@ targets:
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         NSLocalNetworkUsageDescription: 检测本机设备服务连接，用于验证手机内签名安装和定位功能。
+        UIBackgroundModes: [processing]
+        BGTaskSchedulerPermittedIdentifiers: [com.locsign.renew-apps]
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
   LocSignTests:

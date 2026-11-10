@@ -2,6 +2,86 @@ import XCTest
 @testable import LocSign
 
 final class DeveloperServicesProvisionerTests: XCTestCase {
+    private let fixtureProfileExpiry = Date(timeIntervalSince1970: 4_070_908_800)
+
+    func testRemoteProfileAtOrBelowMinimumIsSkippedBeforeCreation() async throws {
+        for minimum in [fixtureProfileExpiry, fixtureProfileExpiry.addingTimeInterval(1)] {
+            let fixture = try setup(cached: true, failProfile: true)
+            do {
+                _ = try await run(fixture, minimumProfileExpiry: minimum)
+                XCTFail("Old listed profile accepted as a renewal")
+            } catch { XCTAssertEqual(error as? DeveloperServicesError, .rejected(503)) }
+            let mutations = await fixture.gateway.mutations
+            XCTAssertEqual(mutations, ["profile:bundle:cert:device"])
+        }
+    }
+
+    func testCreatedProfileAtOrBelowMinimumIsRejectedAndPendingIdentityIsRetained() async throws {
+        for minimum in [fixtureProfileExpiry, fixtureProfileExpiry.addingTimeInterval(1)] {
+            let fixture = try setup(cached: true, missingProfile: true)
+            do {
+                _ = try await run(fixture, minimumProfileExpiry: minimum)
+                XCTFail("Old created profile accepted as a renewal")
+            } catch ProvisioningError.materialInvalid(_) {}
+            let saved = try await fixture.store.loadPending()
+            XCTAssertEqual(saved?.privateKeyPEM, try data("test-key", "pem"))
+            XCTAssertEqual(saved?.certificate?.id, "cert")
+            let mutations = await fixture.gateway.mutations
+            XCTAssertEqual(mutations, ["profile:bundle:cert:device"])
+        }
+    }
+
+    func testProfileConflictCannotRecoverOldProfileOrRepeatCreation() async throws {
+        for minimum in [fixtureProfileExpiry, fixtureProfileExpiry.addingTimeInterval(1)] {
+            let fixture = try setup(cached: true, missingProfile: true)
+            await fixture.gateway.setProfileConflict(availableAfterConflict: true, reason: .profileRejected(409, .existingProfile))
+            do {
+                _ = try await run(fixture, minimumProfileExpiry: minimum)
+                XCTFail("Old profile accepted after create conflict")
+            } catch {
+                XCTAssertEqual(error as? DeveloperServicesFailure, .init(step: .createProfile, reason: .profileRejected(409, .existingProfile)))
+            }
+            let reads = await fixture.gateway.profileReads
+            let mutations = await fixture.gateway.mutations
+            let saved = try await fixture.store.loadPending()
+            XCTAssertEqual(reads, 2)
+            XCTAssertEqual(mutations, ["profile:bundle:cert:device"])
+            XCTAssertEqual(saved?.privateKeyPEM, try data("test-key", "pem"))
+            XCTAssertEqual(saved?.certificate?.id, "cert")
+        }
+    }
+
+    func testNilOrEarlierMinimumKeepsRemoteProfileReuseWithoutMutation() async throws {
+        let minimums: [Date?] = [nil, fixtureProfileExpiry.addingTimeInterval(-1)]
+        for minimum in minimums {
+            let fixture = try setup(cached: true)
+            let material = try await run(fixture, minimumProfileExpiry: minimum)
+            XCTAssertEqual(material.profileData, try data("profile-valid", "mobileprovision"))
+            XCTAssertEqual(material.profileExpiry, fixtureProfileExpiry)
+            let mutations = await fixture.gateway.mutations
+            XCTAssertEqual(mutations, [])
+        }
+    }
+
+    func testCreatedProfileStrictlyAfterMinimumIsAccepted() async throws {
+        let fixture = try setup(cached: true, missingProfile: true)
+        let material = try await run(fixture, minimumProfileExpiry: fixtureProfileExpiry.addingTimeInterval(-1))
+        XCTAssertEqual(material.profileData, try data("profile-valid", "mobileprovision"))
+        XCTAssertEqual(material.profileExpiry, fixtureProfileExpiry)
+    }
+
+    func testProfileConflictCanRecoverProfileStrictlyAfterMinimum() async throws {
+        let fixture = try setup(cached: true, missingProfile: true)
+        await fixture.gateway.setProfileConflict(availableAfterConflict: true)
+        let material = try await run(fixture, minimumProfileExpiry: fixtureProfileExpiry.addingTimeInterval(-1))
+        XCTAssertEqual(material.profileData, try data("profile-valid", "mobileprovision"))
+        XCTAssertEqual(material.profileExpiry, fixtureProfileExpiry)
+        let reads = await fixture.gateway.profileReads
+        let mutations = await fixture.gateway.mutations
+        XCTAssertEqual(reads, 2)
+        XCTAssertEqual(mutations, ["profile:bundle:cert:device"])
+    }
+
     func testFailedProfileRequeryPreservesClassifiedCreationRejection() async throws {
         let fixture = try setup(cached: true, missingProfile: true)
         await fixture.gateway.setProfileConflict(availableAfterConflict: false, reason: .profileRejected(409, .existingProfile))
@@ -375,10 +455,12 @@ final class DeveloperServicesProvisionerTests: XCTestCase {
         let gateway = ProvisioningGatewayFixture(store: store, cert: cert, profile: profile, now: now, missingDevice: missingDevice, missingBundle: missingBundle, missingProfile: missingProfile, failProfile: failProfile, quota: quota, capabilities: capabilities)
         return Fixture(gateway: gateway, store: store, keys: KeyFixture(pending: pending), anchors: [try data("profile-root", "cer")])
     }
-    private func run(_ fixture: Fixture, confirmation: @escaping @Sendable ([CertificateRevocation]) async -> Bool = { _ in false }) async throws -> ProvisioningMaterial {
+    private func run(_ fixture: Fixture, minimumProfileExpiry: Date? = nil,
+                     confirmation: @escaping @Sendable ([CertificateRevocation]) async -> Bool = { _ in false }) async throws -> ProvisioningMaterial {
         let date = now
         return try await DeveloperServicesProvisioner(gateway: fixture.gateway, store: fixture.store, keys: fixture.keys, anchors: fixture.anchors, now: { date })
-            .provision(app: .init(bundleID: "com.test.app", name: "Test"), deviceUDID: "SYNTHETIC-UDID", teamID: "TEAM12345", confirmRevocation: confirmation)
+            .provision(app: .init(bundleID: "com.test.app", name: "Test"), deviceUDID: "SYNTHETIC-UDID", teamID: "TEAM12345",
+                       minimumProfileExpiry: minimumProfileExpiry, confirmRevocation: confirmation)
     }
     private func data(_ name: String, _ ext: String) throws -> Data {
         try Data(contentsOf: XCTUnwrap(Bundle(for: Self.self).url(forResource: name, withExtension: ext)))

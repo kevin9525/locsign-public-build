@@ -25,12 +25,18 @@ final class InstallationSettings: ObservableObject {
         self.directory = directory
         self.defaults = defaults
         host = defaults.string(forKey: "install.host") ?? "10.7.0.1"
+        reloadPairing()
+    }
+
+    func reloadPairing() {
+        guard operationID == nil else { return }
         do {
             if FileManager.default.fileExists(atPath: pairingURL.path) {
                 let saved = try JSONDecoder().decode(SavedPairing.self, from: Data(contentsOf: pairingURL))
                 _ = try PairingRecord(data: saved.data)
-                pairing = saved
-            }
+                if pairing != saved { pairing = saved }
+            } else if pairing != nil { pairing = nil }
+            loadError = nil
         } catch { loadError = "读取已保存配对文件失败，请解锁手机或重新导入：\(error.localizedDescription)" }
     }
 

@@ -17,6 +17,7 @@ struct ProvisioningRequest: Sendable {
     let ipaURL: URL
     let deviceUDID: String
     var signingBundleID: String? = nil
+    var minimumProfileExpiry: Date? = nil
 }
 
 struct CertificateRevocation: Sendable, Equatable, Identifiable {

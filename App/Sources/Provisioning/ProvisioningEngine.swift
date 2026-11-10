@@ -132,6 +132,9 @@ actor ProvisioningEngineLive: ProvisioningEngine {
                 expectedCertificateDER: active.certificateDER, privateKeyPEM: Data(active.material.privateKeyPEM.utf8))
         } catch ProfileValidationError.expired { return nil }
         try check(operation)
+        if let minimumProfileExpiry = request.minimumProfileExpiry {
+            guard verified.expiry > minimumProfileExpiry else { return nil }
+        }
         return ProvisioningMaterial(privateKeyPEM: active.material.privateKeyPEM, profileData: verified.raw,
             certificateExpiry: min(active.material.certificateExpiry, verified.certificateExpiry), profileExpiry: verified.expiry,
             signingBundleID: app.bundleID)
@@ -171,6 +174,11 @@ actor ProvisioningEngineLive: ProvisioningEngine {
                 expectedBundleID: app.bundleID,
                 expectedTeamID: request.teamID, expectedUDID: request.deviceUDID,
                 expectedCertificateDER: der, privateKeyPEM: pending.privateKeyPEM)
+            if let minimumProfileExpiry = request.minimumProfileExpiry {
+                guard verified.expiry > minimumProfileExpiry else {
+                    throw ProvisioningError.materialInvalid("描述文件有效期未延长，请稍后重试")
+                }
+            }
             let checkedMaterial = ProvisioningMaterial(privateKeyPEM: material.privateKeyPEM, profileData: verified.raw,
                 certificateExpiry: min(certificate.expiry, verified.certificateExpiry), profileExpiry: verified.expiry,
                 signingBundleID: app.bundleID)

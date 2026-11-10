@@ -12,10 +12,10 @@ struct SigningView: View {
     @State private var continueAfterSetup = false
     @State private var setupForInstallation = false
 
-    init(settings: InstallationSettings) {
+    init(settings: InstallationSettings, model: SigningViewModel, account: AppleIDProvisioningModel) {
         self.settings = settings
-        _model = StateObject(wrappedValue: SigningViewModel(settings: settings))
-        _account = StateObject(wrappedValue: AppleIDProvisioningModel(settings: settings))
+        _model = StateObject(wrappedValue: model)
+        _account = StateObject(wrappedValue: account)
     }
 
     private var busy: Bool { model.busy || account.isBusy || operation != nil }
@@ -106,7 +106,6 @@ struct SigningView: View {
                 }
             }
             .navigationTitle("安装")
-            .task { await account.restore() }
             .onChange(of: account.teamID) { _, team in
                 Task { await model.restoreSigningIdentifier(teamID: team) }
             }

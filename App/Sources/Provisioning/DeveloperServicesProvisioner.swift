@@ -95,6 +95,7 @@ struct DeveloperServicesProvisioner: Sendable {
     let now: @Sendable () -> Date
 
     func provision(app: ProvisioningApp, deviceUDID: String, teamID: String,
+                   minimumProfileExpiry: Date? = nil,
                    confirmRevocation: @escaping @Sendable ([CertificateRevocation]) async -> Bool) async throws -> ProvisioningMaterial {
         try Task.checkCancellation()
         guard !app.bundleID.isEmpty, !deviceUDID.isEmpty, !teamID.isEmpty else { throw DeveloperServicesError.invalidResponse }
@@ -179,6 +180,11 @@ struct DeveloperServicesProvisioner: Sendable {
         func validate(_ profile: DeveloperProfile) throws -> ProvisioningMaterial {
             let validated = try validator.validate(data: profile.content, expectedBundleID: app.bundleID,
                 expectedTeamID: teamID, expectedUDID: deviceUDID, expectedCertificateDER: der, privateKeyPEM: identity.privateKeyPEM)
+            if let minimumProfileExpiry {
+                guard validated.expiry > minimumProfileExpiry else {
+                    throw ProvisioningError.materialInvalid("描述文件有效期未延长，请稍后重试")
+                }
+            }
             return ProvisioningMaterial(privateKeyPEM: pem, profileData: validated.raw,
                 certificateExpiry: min(certificate.expiry, validated.certificateExpiry), profileExpiry: validated.expiry)
         }

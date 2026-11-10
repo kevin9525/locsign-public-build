@@ -38,6 +38,8 @@ jobs:
           PY
       - name: Install XcodeGen
         run: brew install xcodegen
+      - name: Prepare pinned device location dependency and image
+        run: python3 .ci/prepare-idevice.py
       - name: Generate Xcode project
         run: |
           xcodegen generate

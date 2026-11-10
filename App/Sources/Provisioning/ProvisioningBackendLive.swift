@@ -39,7 +39,7 @@ final class ProvisioningBackendLive: ProvisioningBackend, @unchecked Sendable {
             anchors: try ProvisioningProfileValidator.apple().trustAnchors, now: { Date() })
         try check()
         let material = try await provisioner.provision(app: app, deviceUDID: request.deviceUDID, teamID: request.teamID,
-            confirmRevocation: confirmRevocation)
+            minimumProfileExpiry: request.minimumProfileExpiry, confirmRevocation: confirmRevocation)
         try check()
         return material
     }

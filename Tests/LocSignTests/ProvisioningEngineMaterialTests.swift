@@ -4,6 +4,86 @@ import ZIPFoundation
 @testable import LocSign
 
 final class ProvisioningEngineMaterialTests: XCTestCase {
+    // The authenticated fixture expires on 2099-01-01, independently of the
+    // deliberately inaccurate expiry claimed by MaterialBackendFixture.
+    private let fixtureProfileExpiry = Date(timeIntervalSince1970: 4_070_908_800)
+
+    func testCachedProfileAtOrBelowMinimumIsMissWithoutReplacingActive() async throws {
+        let fixture = try setup()
+        let account = try await fixture.engine.logIn(appleID: "user@example.com", password: "synthetic", twoFactorCode: { nil })
+        var request = ProvisioningRequest(accountID: account.id, teamID: "TEAM12345", ipaURL: fixture.ipa, deviceUDID: "SYNTHETIC-UDID")
+        _ = try await fixture.engine.provision(request: request, confirmRevocation: { _ in false })
+        let active = try XCTUnwrap(fixture.keychain.read(account: account.appleID, provider: "signing-material-v1", team: request.teamID, key: "active"))
+        for minimum in [fixtureProfileExpiry, fixtureProfileExpiry.addingTimeInterval(1)] {
+            request.minimumProfileExpiry = minimum
+            let cached = try await fixture.engine.cachedMaterial(request: request)
+            XCTAssertNil(cached)
+            XCTAssertEqual(try fixture.keychain.read(account: account.appleID, provider: "signing-material-v1", team: request.teamID, key: "active"), active)
+        }
+    }
+
+    func testCacheFreshnessUsesAuthenticatedExpiryInsteadOfStoredMetadata() async throws {
+        let fixture = try setup()
+        let account = try await fixture.engine.logIn(appleID: "user@example.com", password: "synthetic", twoFactorCode: { nil })
+        var request = ProvisioningRequest(accountID: account.id, teamID: "TEAM12345", ipaURL: fixture.ipa, deviceUDID: "SYNTHETIC-UDID")
+        _ = try await fixture.engine.provision(request: request, confirmRevocation: { _ in false })
+        let active = try XCTUnwrap(fixture.keychain.read(account: account.appleID, provider: "signing-material-v1", team: request.teamID, key: "active"))
+        var row = try XCTUnwrap(JSONSerialization.jsonObject(with: active) as? [String: Any])
+        var material = try XCTUnwrap(row["material"] as? [String: Any])
+        material["profileExpiry"] = fixtureProfileExpiry.addingTimeInterval(86400).timeIntervalSinceReferenceDate
+        row["material"] = material
+        try fixture.keychain.write(JSONSerialization.data(withJSONObject: row), account: account.appleID, provider: "signing-material-v1", team: request.teamID, key: "active")
+        request.minimumProfileExpiry = fixtureProfileExpiry
+        let cached = try await fixture.engine.cachedMaterial(request: request)
+        XCTAssertNil(cached)
+    }
+
+    func testNilOrEarlierMinimumKeepsAuthenticatedCacheReuse() async throws {
+        let fixture = try setup()
+        let account = try await fixture.engine.logIn(appleID: "user@example.com", password: "synthetic", twoFactorCode: { nil })
+        var request = ProvisioningRequest(accountID: account.id, teamID: "TEAM12345", ipaURL: fixture.ipa, deviceUDID: "SYNTHETIC-UDID")
+        _ = try await fixture.engine.provision(request: request, confirmRevocation: { _ in false })
+        let minimums: [Date?] = [nil, fixtureProfileExpiry.addingTimeInterval(-1)]
+        for minimum in minimums {
+            request.minimumProfileExpiry = minimum
+            let cached = try await fixture.engine.cachedMaterial(request: request)
+            XCTAssertEqual(cached?.profileData, try data("profile-valid", "mobileprovision"))
+            XCTAssertEqual(cached?.profileExpiry, fixtureProfileExpiry)
+        }
+    }
+
+    func testBackendCannotClaimFreshnessForOldProfileAndFailurePreservesActiveAndKey() async throws {
+        let fixture = try setup()
+        let account = try await fixture.engine.logIn(appleID: "user@example.com", password: "synthetic", twoFactorCode: { nil })
+        var request = ProvisioningRequest(accountID: account.id, teamID: "TEAM12345", ipaURL: fixture.ipa, deviceUDID: "SYNTHETIC-UDID")
+        _ = try await fixture.engine.provision(request: request, confirmRevocation: { _ in false })
+        let active = try XCTUnwrap(fixture.keychain.read(account: account.appleID, provider: "signing-material-v1", team: request.teamID, key: "active"))
+        for minimum in [fixtureProfileExpiry, fixtureProfileExpiry.addingTimeInterval(1)] {
+            request.minimumProfileExpiry = minimum
+            do {
+                _ = try await fixture.engine.provision(request: request, confirmRevocation: { _ in false })
+                XCTFail("Old authenticated profile accepted as a renewal")
+            } catch ProvisioningError.materialInvalid(_) {}
+            XCTAssertEqual(try fixture.keychain.read(account: account.appleID, provider: "signing-material-v1", team: request.teamID, key: "active"), active)
+            let pendingBytes = try XCTUnwrap(fixture.keychain.read(account: account.appleID, provider: "signing-material-v1", team: request.teamID, key: "pending"))
+            let pending = try JSONDecoder().decode(PendingSigningMaterial.self, from: pendingBytes)
+            XCTAssertEqual(pending.privateKeyPEM, try data("test-key", "pem"))
+            XCTAssertEqual(pending.certificate?.id, "cert")
+        }
+        request.minimumProfileExpiry = nil
+        let retained = try await fixture.engine.cachedMaterial(request: request)
+        XCTAssertEqual(retained?.profileExpiry, fixtureProfileExpiry)
+    }
+
+    func testBackendProfileStrictlyAfterMinimumIsAccepted() async throws {
+        let fixture = try setup()
+        let account = try await fixture.engine.logIn(appleID: "user@example.com", password: "synthetic", twoFactorCode: { nil })
+        let request = ProvisioningRequest(accountID: account.id, teamID: "TEAM12345", ipaURL: fixture.ipa,
+            deviceUDID: "SYNTHETIC-UDID", minimumProfileExpiry: fixtureProfileExpiry.addingTimeInterval(-1))
+        let material = try await fixture.engine.provision(request: request, confirmRevocation: { _ in false })
+        XCTAssertEqual(material.profileExpiry, fixtureProfileExpiry)
+    }
+
     func testCorruptCachedProfileRemainsAnErrorInsteadOfAutomaticRenewal() async throws {
         let fixture = try setup()
         let account = try await fixture.engine.logIn(appleID: "user@example.com", password: "synthetic", twoFactorCode: { nil })
@@ -196,6 +276,6 @@ private final class MaterialBackendFixture: ProvisioningBackend, @unchecked Send
         try await store.savePending(pending)
         return ProvisioningMaterial(privateKeyPEM: String(data: pending.privateKeyPEM, encoding: .utf8)!,
             profileData: lock.withLock { useBadProfile ? badProfile : profile },
-            certificateExpiry: pending.certificate!.expiry, profileExpiry: Date(timeIntervalSince1970: 4_000_000_000))
+            certificateExpiry: pending.certificate!.expiry, profileExpiry: Date(timeIntervalSince1970: 4_200_000_000))
     }
 }
