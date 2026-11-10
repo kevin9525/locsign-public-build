@@ -21,8 +21,10 @@ final class LocationSessionWorker: @unchecked Sendable {
     typealias Factory = (String, Data, URL?) throws -> any LocationNativeSession
     private let state: State
 
-    init(makeSession: @escaping Factory = { try NativeLocationSession(host: $0, pairingData: $1, ddiDirectory: $2) }) {
-        let state = State(makeSession: makeSession)
+    init(resendInterval: TimeInterval = 5,
+         makeSession: @escaping Factory = { try NativeLocationSession(host: $0, pairingData: $1, ddiDirectory: $2) }) {
+        precondition(resendInterval.isFinite && resendInterval > 0)
+        let state = State(resendInterval: resendInterval, makeSession: makeSession)
         self.state = state
         let thread = Thread { state.run() }
         thread.name = "com.locsign.location-session"
@@ -45,7 +47,7 @@ final class LocationSessionWorker: @unchecked Sendable {
             // Install with the accepted coordinate on the owning Thread. A
             // resend already in flight retains its previous request's handler.
             state.failureHandler = onFailure
-            state.nextResend = Date().addingTimeInterval(5)
+            state.nextResend = Date().addingTimeInterval(state.resendInterval)
         }
     }
 
@@ -101,13 +103,16 @@ final class LocationSessionWorker: @unchecked Sendable {
         var stopping = false
         var failureHandler: (@Sendable (String) -> Void)?
         let makeSession: Factory
+        let resendInterval: TimeInterval
         // Below this line, state is exclusively accessed on the worker Thread.
         var session: (any LocationNativeSession)?
         var coordinate: LocationCoordinate?
         var healthCheck: (() throws -> Void)?
         var nextResend = Date.distantFuture
 
-        init(makeSession: @escaping Factory) { self.makeSession = makeSession }
+        init(resendInterval: TimeInterval, makeSession: @escaping Factory) {
+            self.resendInterval = resendInterval; self.makeSession = makeSession
+        }
         func enqueue(_ job: @escaping (State) -> Void) {
             condition.lock(); jobs.append(job); condition.signal(); condition.unlock()
         }
@@ -137,7 +142,7 @@ final class LocationSessionWorker: @unchecked Sendable {
                     do {
                         try healthCheck?()
                         if let coordinate { try session?.apply(coordinate) }
-                        nextResend = Date().addingTimeInterval(5)
+                        nextResend = Date().addingTimeInterval(resendInterval)
                     } catch {
                         close()
                         handler?("定位连接已中断，当前设备位置未确认。\(error.localizedDescription)")

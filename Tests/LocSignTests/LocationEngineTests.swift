@@ -2,15 +2,48 @@ import XCTest
 @testable import LocSign
 
 final class LocationEngineTests: XCTestCase {
-    func testDelayedFailureCannotInvalidateNewExplicitRequest() {
-        var revision = LocationFailureRevision()
-        let oldPeriodicFailure = revision.current
-        revision.advance() // A new explicit set starts before the failure callback arrives.
-        let newRequest = revision.current
-        XCTAssertFalse(revision.accepts(oldPeriodicFailure))
-        XCTAssertTrue(revision.accepts(newRequest))
-        revision.advance() // Clear/disconnect also invalidates pending failures.
-        XCTAssertFalse(revision.accepts(newRequest))
+    func testOldResendFailureKeepsItsHandlerWhileReplacementRemainsUsable() async throws {
+        let oldResendEntered = expectation(description: "Old periodic resend entered")
+        let newResendEntered = expectation(description: "Replacement periodic resend entered")
+        let oldFailure = expectation(description: "Handler A receives old failure")
+        let newFailure = expectation(description: "Handler B receives new failure")
+        let replacementStarted = expectation(description: "Replacement request started")
+        let releaseOld = DispatchSemaphore(value: 0)
+        let releaseNew = DispatchSemaphore(value: 0)
+        defer { releaseOld.signal(); releaseNew.signal() }
+        let recorder = LocationThreadRecorder()
+        var sessionNumber = 0 // The factory only runs on the worker's fixed Thread.
+        let worker = LocationSessionWorker(resendInterval: 0.05, makeSession: { _, _, _ in
+            sessionNumber += 1
+            let number = sessionNumber
+            return ResendFailureLocationSession(recorder: recorder, number: number,
+                entered: { (number == 1 ? oldResendEntered : newResendEntered).fulfill() },
+                release: number == 1 ? releaseOld : releaseNew)
+        })
+        let first = try LocationCoordinate(latitude: 1, longitude: 2)
+        let second = try LocationCoordinate(latitude: 3, longitude: 4)
+        try await worker.set(first, host: "host", pairingData: Data(), ddiDirectory: nil, healthCheck: {}, onFailure: { _ in
+            recorder.record("failure-A"); oldFailure.fulfill()
+        })
+        await fulfillment(of: [oldResendEntered], timeout: 2)
+        let replacement = Task {
+            replacementStarted.fulfill()
+            try await worker.set(second, host: "host", pairingData: Data(), ddiDirectory: nil, healthCheck: {}, onFailure: { _ in
+                recorder.record("failure-B"); newFailure.fulfill()
+            })
+        }
+        await fulfillment(of: [replacementStarted], timeout: 2)
+        releaseOld.signal()
+        try await replacement.value
+        await fulfillment(of: [oldFailure, newResendEntered], timeout: 2)
+        let beforeNewFailure = recorder.snapshot().map(\.0)
+        XCTAssertEqual(beforeNewFailure.filter { $0.hasPrefix("failure-") }, ["failure-A"])
+        XCTAssertTrue(beforeNewFailure.contains("set-2-3.0"), "The replacement was accepted after the old session failed")
+        XCTAssertFalse(beforeNewFailure.contains("close-2"), "Old failure must not close the replacement")
+        releaseNew.signal()
+        await fulfillment(of: [newFailure], timeout: 2)
+        await worker.disconnect()
+        XCTAssertEqual(recorder.snapshot().map(\.0).filter { $0.hasPrefix("failure-") }, ["failure-A", "failure-B"])
     }
 
     func testCoordinatesRejectNonfiniteAndOutOfRangeValues() throws {
@@ -104,4 +137,26 @@ private final class BlockingLocationSession: LocationNativeSession {
     }
     func restore() throws { }
     func close() { recorder.record("close") }
+}
+
+private final class ResendFailureLocationSession: LocationNativeSession {
+    let recorder: LocationThreadRecorder
+    let number: Int
+    let entered: () -> Void
+    let release: DispatchSemaphore
+    private var calls = 0
+    init(recorder: LocationThreadRecorder, number: Int, entered: @escaping () -> Void, release: DispatchSemaphore) {
+        self.recorder = recorder; self.number = number; self.entered = entered; self.release = release
+    }
+    func apply(_ coordinate: LocationCoordinate) throws {
+        calls += 1
+        recorder.record("set-\(number)-\(coordinate.latitude)")
+        if calls > 1 {
+            entered()
+            _ = release.wait(timeout: .now() + 5)
+            throw NSError(domain: "InjectedResendFailure", code: number)
+        }
+    }
+    func restore() throws { }
+    func close() { recorder.record("close-\(number)") }
 }
