@@ -4,6 +4,19 @@ import OpenAPIRuntime
 @testable import LocSign
 
 final class AnisetteTransportTests: XCTestCase {
+    func testLiveAdapterClassifiesProfileConflictBeforeDiscardingSensitiveBody() async throws {
+        let client = XKitHTTPClientAdapter(boundary: .apple, protocolClasses: [ProfileConflictURLProtocol.self])
+        do {
+            _ = try await client.makeRequest(XKit.HTTPRequest(method: .post,
+                url: URL(string: "https://developerservices2.apple.com/services/v1/profiles")!))
+            XCTFail("Profile conflict accepted")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("已有描述文件"), error.localizedDescription)
+            XCTAssertTrue(error.localizedDescription.contains("HTTP 409"))
+            XCTAssertFalse(String(describing: error).contains("synthetic-server-secret"))
+        }
+    }
+
     func testUnrecognizedAppleConflictKeepsStatusAndDiscardsBody() async throws {
         let client = XKitHTTPClientAdapter(boundary: .apple, protocolClasses: [RegistrationConflictURLProtocol.self])
         let result = try await client.makeRequest(XKit.HTTPRequest(url: URL(string: "https://developerservices2.apple.com/services/v1/unknown")!), requireHTTPSuccess: false)
@@ -96,6 +109,19 @@ final class AnisetteTransportTests: XCTestCase {
         do { _ = try await client.makeWebSocket(url: URL(string: "wss://external.invalid/socket")!); XCTFail("Wrong origin accepted") }
         catch { XCTAssertEqual(error as? ProvisioningNetworkError, .rejected) }
     }
+}
+
+private final class ProfileConflictURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let response = HTTPURLResponse(url: request.url!, statusCode: 409, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
+        let data = Data(#"{"errors":[{"code":"ENTITY_ERROR","detail":"There is already a current iOS Development profile for this App ID. synthetic-server-secret"}]}"#.utf8)
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }
 
 private final class RegistrationConflictURLProtocol: URLProtocol {

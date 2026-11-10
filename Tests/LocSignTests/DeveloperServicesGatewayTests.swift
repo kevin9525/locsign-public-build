@@ -5,6 +5,46 @@ import OpenAPIRuntime
 @testable import LocSign
 
 final class DeveloperServicesGatewayTests: XCTestCase {
+    func testExplicitProfileNameConflictRetriesOnceWithOnlyNameChanged() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setProfileConflicts([
+            ["code": "ENTITY_ERROR.ATTRIBUTE.INVALID", "detail": "A profile with name 'synthetic-sensitive-response' already exists on this team.",
+             "source": ["pointer": "/data/attributes/name"]]
+        ])
+        let profile = try await gateway(transport).createDevelopmentProfile(bundleID: "bundle", certificateID: "cert", deviceID: "device")
+        XCTAssertEqual(profile.id, "profile")
+        let requests = await transport.requests
+        XCTAssertEqual(requests.count, 2)
+        let bodies = try requests.map { try XCTUnwrap(JSONSerialization.jsonObject(with: Data(XCTUnwrap($0.body).utf8)) as? [String: Any]) }
+        let first = try XCTUnwrap(bodies[0]["data"] as? [String: Any])
+        let second = try XCTUnwrap(bodies[1]["data"] as? [String: Any])
+        let firstAttributes = try XCTUnwrap(first["attributes"] as? [String: Any])
+        let secondAttributes = try XCTUnwrap(second["attributes"] as? [String: Any])
+        XCTAssertNotEqual(firstAttributes["name"] as? String, secondAttributes["name"] as? String)
+        XCTAssertEqual(firstAttributes["profileType"] as? String, "IOS_APP_DEVELOPMENT")
+        XCTAssertEqual(secondAttributes["profileType"] as? String, "IOS_APP_DEVELOPMENT")
+        XCTAssertEqual(first["relationships"] as? NSDictionary, second["relationships"] as? NSDictionary)
+        XCTAssertTrue(requests.allSatisfy { $0.path == "/v1/profiles" && $0.override == "POST" })
+    }
+
+    func testProfileLimitConflictIsActionableWithoutNameRetryOrDeletion() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setProfileConflicts([
+            ["code": "ENTITY_ERROR", "detail": "There is already a current iOS Development profile for this App ID. synthetic-sensitive-response"]
+        ])
+        do {
+            _ = try await gateway(transport).createDevelopmentProfile(bundleID: "bundle", certificateID: "cert", deviceID: "device")
+            XCTFail("Existing profile conflict accepted")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("已有描述文件"), error.localizedDescription)
+            XCTAssertTrue(error.localizedDescription.contains("HTTP 409"))
+            XCTAssertFalse(error.localizedDescription.contains("synthetic-sensitive-response"))
+        }
+        let requests = await transport.requests
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertFalse(requests.contains { $0.override == "DELETE" })
+    }
+
     func testPendingKeyRecoversThroughRealGatewayAndProfileValidationWithoutNewCSR() async throws {
         func fixture(_ name: String, _ ext: String) throws -> Data {
             try Data(contentsOf: XCTUnwrap(Bundle(for: Self.self).url(forResource: name, withExtension: ext)))
@@ -488,6 +528,8 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
     private var malformedResponse = false
     private var transportFailure = false
     private var cancellation = false
+    private var profileConflicts: [[String: Any]] = []
+    func setProfileConflicts(_ values: [[String: Any]]) { profileConflicts = values }
     func setMalformedResponse() { malformedResponse = true }
     func setTransportFailure() { transportFailure = true }
     func setCancellation() { cancellation = true }
@@ -529,6 +571,11 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
         let method = request.headerFields[.init("X-HTTP-Method-Override")!] ?? request.method.rawValue
         let path = request.path ?? ""
         requests.append(.init(host: baseURL.host, path: path, token: request.headerFields[.init("X-Apple-GS-Token")!], team: team, body: String(data: bytes, encoding: .utf8), override: method))
+        if path == "/v1/profiles", method == "POST", !profileConflicts.isEmpty {
+            let error = profileConflicts.removeFirst()
+            return (.init(status: .conflict, headerFields: [.contentType: "application/json"]),
+                HTTPBody(try JSONSerialization.data(withJSONObject: ["errors": [error]])))
+        }
         if !conflict, path.contains("ios/submitDevelopmentCSR.action"), let code = legacyResultCode {
             if let legacyPayload { return (.init(status: .ok), HTTPBody(legacyPayload)) }
             let payload: [String: Any] = ["resultCode": code, "resultString": "synthetic-sensitive-response", "certRequest": ["certContent": issuedCertificate]]
