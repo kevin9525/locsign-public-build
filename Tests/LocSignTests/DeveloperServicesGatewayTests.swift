@@ -25,6 +25,22 @@ final class DeveloperServicesGatewayTests: XCTestCase {
         XCTAssertTrue(requests.allSatisfy { $0.path == "/v1/profiles" && $0.override == "POST" })
     }
 
+    func testUnknownProfileEvidenceNeverAuthorizesAnotherPOST() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setProfileConflicts([["code": "ENTITY_ERROR", "detail": "Multiple profiles found with the name 'synthetic-sensitive-response'. Please remove the duplicate profiles and try again."]])
+        do {
+            _ = try await gateway(transport).createDevelopmentProfile(bundleID: "bundle", certificateID: "cert", deviceID: "device")
+            XCTFail("Conflict ignored")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("ENTITY_ERROR"))
+            XCTAssertTrue(error.localizedDescription.contains("HTTP 409"))
+            XCTAssertFalse(String(describing: error).contains("synthetic-sensitive-response"))
+        }
+        let requests = await transport.requests
+        XCTAssertEqual(requests.count, 1)
+        XCTAssertEqual(requests.first?.override, "POST")
+    }
+
     func testCancellationOnNameConflictPreventsSecondProfilePOST() async throws {
         let transport = DeveloperAPIFixture()
         await transport.setProfileConflicts([["code": "ENTITY_ERROR.ATTRIBUTE.INVALID", "detail": "A profile with name 'test' already exists on this team.", "source": ["pointer": "/data/attributes/name"]]])

@@ -12,6 +12,24 @@ final class DeveloperProfileDiagnosticsTests: XCTestCase {
         XCTAssertNotEqual(error, .profileRejected(409, .nameConflict))
     }
 
+    func testDiagnosticCluesIgnoreQuotedNamesAndNeverExposeUnknownFields() throws {
+        for quote in ["'duplicate profile name'", "\"duplicate profile name\"", "“duplicate profile name”", "‘duplicate profile name’"] {
+            let data = try payload(code: "ENTITY_ERROR", detail: "opaque-private " + quote, pointer: "/opaque/synthetic-private@example.com")
+            let error = try XCTUnwrap(DeveloperProfileDiagnostics.rejection(status: 409, data: data))
+            XCTAssertTrue(error.localizedDescription.contains("ENTITY_ERROR"))
+            XCTAssertFalse(error.localizedDescription.contains("重复"))
+            XCTAssertFalse(error.localizedDescription.contains("名称"))
+            XCTAssertFalse(String(describing: error).contains("opaque-private"))
+            XCTAssertFalse(String(describing: error).contains("synthetic-private"))
+            XCTAssertNotEqual(error, .profileRejected(409, .nameConflict))
+        }
+    }
+
+    func testUnknownCodeAndIdentifierTokensDoNotBecomeDiagnosticEvidence() throws {
+        let data = try payload(code: "ENTITY_ERROR.PRIVATE_TOKEN", detail: "duplicate.profile.name@example.invalid profile-duplicate-token https://private.invalid/profile/duplicate", pointer: "/private/certificate")
+        XCTAssertEqual(DeveloperProfileDiagnostics.rejection(status: 409, data: data), .profileRejected(409, .unknown))
+    }
+
     func testOnlyExplicitNameCollisionAuthorizesNameRetry() throws {
         let response = try payload(code: "ENTITY_ERROR.ATTRIBUTE.INVALID",
             detail: "A profile with name 'secret@example.com' already exists on this team.", pointer: "/data/attributes/name")

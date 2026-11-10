@@ -123,13 +123,15 @@ struct XKitDeveloperServicesGateway: DeveloperServicesGateway {
         }
     }
     func createDevelopmentProfile(bundleID: String, certificateID: String, deviceID: String) async throws -> DeveloperProfile {
-        let name = "LocSign " + bundleID
+        // A replacement profile can coexist with the old one, but Apple rejects
+        // duplicate display names. Reuse is handled before this creation path.
+        let name = "LocSign " + UUID().uuidString
         do { return try await createProfile(name: name, bundleID: bundleID, certificateID: certificateID, deviceID: deviceID) }
         catch let failure as DeveloperServicesFailure where failure.step == .createProfile && failure.reason == .profileRejected(409, .nameConflict) {
             try Task.checkCancellation()
             // Only the display name changes. App identity, devices, certificate,
             // profile type, and all existing remote resources are preserved.
-            return try await createProfile(name: name + " " + UUID().uuidString, bundleID: bundleID,
+            return try await createProfile(name: "LocSign " + UUID().uuidString, bundleID: bundleID,
                 certificateID: certificateID, deviceID: deviceID)
         }
     }
