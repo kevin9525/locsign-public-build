@@ -20,6 +20,7 @@ SecIdentityRef _Nullable LocSignCreateIdentity(SecCertificateRef certificate,
                   trustedRoots:(NSArray *)trustedRoots
                          error:(NSError * _Nullable * _Nullable)error;
 - (BOOL)sendTLSData:(NSData *)data error:(NSError * _Nullable * _Nullable)error;
+- (nullable NSData *)authenticatedPeerCertificateWithError:(NSError * _Nullable * _Nullable)error;
 - (nullable NSData *)readTLSLength:(NSUInteger)length error:(NSError * _Nullable * _Nullable)error;
 // Safe from another thread: wakes I/O without releasing the TLS context or FD.
 - (void)interrupt;

@@ -21,6 +21,7 @@ static NSString * const LSDeviceSocketErrorDomain = @"LocSign.DeviceSocket";
 @property (nonatomic, assign, nullable) SSLContextRef tlsContext;
 @property (nonatomic, assign) NSTimeInterval timeout;
 @property (nonatomic, assign) NSTimeInterval operationDeadline;
+@property (nonatomic, copy, nullable) NSData *authenticatedPeerDER;
 - (int)fileDescriptor;
 - (BOOL)prepareIO;
 @end
@@ -213,6 +214,7 @@ static OSStatus LSWriteCallback(SSLConnectionRef connection, const void *data, s
     if (status == noErr) status = SSLSetCertificate(self.tlsContext, (__bridge CFArrayRef)chain);
 
     NSError *verificationError = nil;
+    NSData *verifiedPeer = nil;
     while (status == noErr || status == errSSLWouldBlock || status == errSSLPeerAuthCompleted) {
         if (NSProcessInfo.processInfo.systemUptime >= self.operationDeadline) { status = errSSLNetworkTimeout; break; }
         status = SSLHandshake(self.tlsContext);
@@ -224,6 +226,14 @@ static OSStatus LSWriteCallback(SSLConnectionRef connection, const void *data, s
                 SecTrustSetNetworkFetchAllowed(trust, false);
                 if (!LocSignVerifyPairingTrust(trust, trustedRoots, &verificationError)) {
                     trustStatus = errSSLXCertChainInvalid;
+                } else {
+                    CFArrayRef certificates = SecTrustCopyCertificateChain(trust);
+                    if (certificates && CFArrayGetCount(certificates) > 0) {
+                        SecCertificateRef leaf = (SecCertificateRef)CFArrayGetValueAtIndex(certificates, 0);
+                        verifiedPeer = CFBridgingRelease(SecCertificateCopyData(leaf));
+                    }
+                    if (certificates) CFRelease(certificates);
+                    if (!verifiedPeer.length) trustStatus = errSSLXCertChainInvalid;
                 }
                 CFRelease(trust);
             }
@@ -234,6 +244,7 @@ static OSStatus LSWriteCallback(SSLConnectionRef connection, const void *data, s
         break;
     }
 
+    if (status == noErr && !verifiedPeer.length) status = errSSLXCertChainInvalid;
     if (status != noErr) {
         if (error) {
             NSMutableDictionary *info = [@{NSLocalizedDescriptionKey:
@@ -246,7 +257,16 @@ static OSStatus LSWriteCallback(SSLConnectionRef connection, const void *data, s
         self.tlsContext = NULL;
         return NO;
     }
+    self.authenticatedPeerDER = verifiedPeer;
     return YES;
+}
+
+- (NSData *)authenticatedPeerCertificateWithError:(NSError **)error {
+    if (!self.tlsContext || !self.authenticatedPeerDER.length) {
+        if (error) *error = LSError(errSecNotAvailable, @"尚未完成设备 TLS 认证，无法读取已验证的设备证书");
+        return nil;
+    }
+    return self.authenticatedPeerDER;
 }
 
 - (BOOL)sendTLSData:(NSData *)data error:(NSError **)error {
@@ -305,6 +325,7 @@ static OSStatus LSWriteCallback(SSLConnectionRef connection, const void *data, s
 }
 
 - (void)close {
+    self.authenticatedPeerDER = nil;
     if (self.tlsContext) {
         self.operationDeadline = NSProcessInfo.processInfo.systemUptime + MIN(self.timeout, 0.1);
         SSLClose(self.tlsContext);

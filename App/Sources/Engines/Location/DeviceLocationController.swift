@@ -42,6 +42,7 @@ final class DeviceLocationController: DeviceLocationControlling {
     private var heartbeat: DeviceHeartbeat?
     private var lockdown: LockdownSession?
     private var identity: String?
+    private var nativePairingData: Data?
     private var generation = UUID()
     private var failureRevision = LocationFailureRevision()
     private var busy = false
@@ -54,11 +55,11 @@ final class DeviceLocationController: DeviceLocationControlling {
         busy = true
         defer { busy = false }
         do {
-            let heartbeat = try await connect(host: host, pairingData: pairingData)
+            let (heartbeat, nativePairing) = try await connect(host: host, pairingData: pairingData)
             let operationGeneration = generation
             let revision = failureRevision.current
             try Task.checkCancellation()
-            try await worker.set(coordinate, host: host, pairingData: pairingData,
+            try await worker.set(coordinate, host: host, pairingData: nativePairing,
                                  ddiDirectory: Bundle.main.url(forResource: "LocationDDI", withExtension: nil),
                                  healthCheck: { try heartbeat.check() }, onFailure: { [weak self] message in
                 Task { @MainActor [weak self] in
@@ -82,10 +83,10 @@ final class DeviceLocationController: DeviceLocationControlling {
         busy = true
         defer { busy = false }
         do {
-            let heartbeat = try await connect(host: host, pairingData: pairingData)
+            let (heartbeat, nativePairing) = try await connect(host: host, pairingData: pairingData)
             let operationGeneration = generation
             try Task.checkCancellation()
-            try await worker.clear(host: host, pairingData: pairingData,
+            try await worker.clear(host: host, pairingData: nativePairing,
                                    ddiDirectory: Bundle.main.url(forResource: "LocationDDI", withExtension: nil),
                                    healthCheck: { try heartbeat.check() })
             try Task.checkCancellation()
@@ -101,6 +102,7 @@ final class DeviceLocationController: DeviceLocationControlling {
         generation = UUID()
         failureRevision.advance()
         identity = nil
+        nativePairingData = nil
         // Detach before awaiting: an older disconnect must not close a newer session.
         let previousHeartbeat = heartbeat
         let previousLockdown = lockdown
@@ -112,9 +114,12 @@ final class DeviceLocationController: DeviceLocationControlling {
         previousLockdown?.close()
     }
 
-    private func connect(host: String, pairingData: Data) async throws -> DeviceHeartbeat {
+    private func connect(host: String, pairingData: Data) async throws -> (DeviceHeartbeat, Data) {
         let key = host + ":" + SHA256.hash(data: pairingData).map { String(format: "%02x", $0) }.joined()
-        if identity == key, let heartbeat { try heartbeat.check(); return heartbeat }
+        if identity == key, let heartbeat, let nativePairingData {
+            try heartbeat.check()
+            return (heartbeat, nativePairingData)
+        }
         await disconnect()
         let currentGeneration = generation
         let pairing = try PairingRecord(data: pairingData)
@@ -122,6 +127,10 @@ final class DeviceLocationController: DeviceLocationControlling {
         let session = LockdownSession(transport: transport, pairing: pairing)
         lockdown = session
         try await session.start()
+        let peerCertificate = try await transport.authenticatedPeerCertificate()
+        let prepared = try LocationPairingRecord.prepare(pairingData, authenticatedDeviceCertificate: peerCertificate)
+        try Task.checkCancellation()
+        guard generation == currentGeneration else { throw CancellationError() }
         _ = try await session.queryUniqueDeviceID()
         let endpoint = try await session.startService("com.apple.mobile.heartbeat")
         let connection = try await DeviceServiceConnection(host: host, endpoint: endpoint, pairing: pairing)
@@ -130,6 +139,7 @@ final class DeviceLocationController: DeviceLocationControlling {
         try await heartbeat.start()
         guard generation == currentGeneration else { throw CancellationError() }
         identity = key
-        return heartbeat
+        nativePairingData = prepared
+        return (heartbeat, prepared)
     }
 }

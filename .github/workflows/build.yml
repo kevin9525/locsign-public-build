@@ -46,7 +46,7 @@ jobs:
             ~/.cargo/git
             ~/.rustup/toolchains/1.94.0-*
             build/idevice/cargo-target
-          key: locsign-idevice-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.ci/build-idevice.py', '.ci/prepare-idevice.py') }}
+          key: locsign-idevice-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.ci/build-idevice.py', '.ci/prepare-idevice.py', '.ci/idevice-*.rs') }}
           restore-keys: |
             locsign-idevice-${{ runner.os }}-${{ runner.arch }}-
       - name: Build bounded device location library and image

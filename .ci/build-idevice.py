@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build pinned idevice with safe FFI timeouts; macOS/Xcode/Rust are required."""
+"""Build pinned idevice with pairing TLS checks and bounded FFI; requires macOS/Xcode/Rust."""
 import argparse
 import hashlib
 import importlib.util
@@ -23,6 +23,11 @@ SOURCE_SHA256 = "882282f8b64c3908f28c2d42a556fcf92102ee982d8be3b8b5b448a02572d73
 FEATURES = "ring,tcp,tunnel_tcp_stack,dvt,location_simulation,mobile_image_mounter,tss"
 TOOLCHAIN = "1.94.0"
 TARGETS = ["aarch64-apple-ios", "x86_64-apple-ios", "aarch64-apple-ios-sim"]
+SNI_SOURCE_SHA256 = "87c21b18d2ef2e7ad0b5ea5598714db29a1b144289530a3440d88ddd3baa992f"
+TLS_FIXTURES = (
+    "pairing-empty-device.der", "pairing-empty-expired.der", "pairing-empty-device-key.der",
+    "pairing-empty-root.der", "pairing-host-cert.der", "pairing-host-key.der",
+)
 
 # These wrappers await timeout INSIDE the runtime. The native owner is blocked
 # until the future has been dropped; no detached timeout can race handle free.
@@ -146,7 +151,28 @@ mod locsign_timeout_tests {
 '''
 
 
+def patch_tls_verifier(root):
+    source = root / "idevice/src/sni.rs"
+    # Match the audited upstream implementation exactly before replacing its
+    # unconditional certificate AND handshake-signature assertions.
+    original = source.read_text(encoding="utf-8").encode("utf-8")
+    if hashlib.sha256(original).hexdigest() != SNI_SOURCE_SHA256:
+        raise ValueError("Pinned TLS verifier changed")
+    resources = Path(__file__).resolve().parent
+    fixtures = resources.parent / "Tests/LocSignTests/Fixtures"
+    verifier = (resources / "idevice-sni.rs").read_text(encoding="utf-8")
+    tests = (resources / "idevice-tls-tests.rs").read_text(encoding="utf-8")
+    fixture_data = {name: (fixtures / name).read_bytes() for name in TLS_FIXTURES}
+    source.write_text(verifier, encoding="utf-8")
+    (source.parent / "locsign_tls_tests.rs").write_text(tests, encoding="utf-8")
+    target = source.parent / "locsign_tls_fixtures"
+    target.mkdir(exist_ok=True)
+    for name, data in fixture_data.items():
+        (target / name).write_bytes(data)
+
+
 def patch_source(root):
+    patch_tls_verifier(root)
     module = root / "ffi/src/locsign_timeout.rs"
     module.write_text(TIMEOUT_MODULE, encoding="utf-8")
     library = root / "ffi/src/lib.rs"
@@ -287,6 +313,8 @@ def main():
     # objects, rather than making the final Apple linker consume Rust LTO IR.
     env = dict(os.environ, CARGO_TARGET_DIR=str(output / "cargo-target"), CARGO_PROFILE_RELEASE_LTO="false")
     env["RUSTFLAGS"] = (env.get("RUSTFLAGS", "") + " -C embed-bitcode=no").strip()
+    run(["cargo", "+" + TOOLCHAIN, "test", "--locked", "-p", "idevice", "--lib", "--no-default-features", "--features", FEATURES,
+         "locsign_tls_tests", "--", "--test-threads=1"], source, env)
     run(["cargo", "+" + TOOLCHAIN, "test", "--locked", "-p", "idevice-ffi", "--lib", "--no-default-features", "--features", FEATURES,
          "locsign_timeout_tests", "--", "--test-threads=1"], source, env)
     for target in TARGETS:
@@ -320,6 +348,8 @@ def main():
     (output / "build-manifest.json").write_text(json.dumps({
         "source_revision": REVISION, "source_sha256": SOURCE_SHA256,
         "build_script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "tls_verifier_sha256": hashlib.sha256(Path(__file__).with_name("idevice-sni.rs").read_bytes()).hexdigest(),
+        "tls_tests_sha256": hashlib.sha256(Path(__file__).with_name("idevice-tls-tests.rs").read_bytes()).hexdigest(),
         "features": FEATURES, "rust_toolchain": TOOLCHAIN, "targets": TARGETS, "operation_timeout_seconds": 30,
         "image_mounter_timeout_seconds": 120,
         "release_lto": False, "embed_bitcode": False,

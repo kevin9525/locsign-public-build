@@ -50,6 +50,11 @@ final class LockdownNetworkTransport: LockdownTransport {
         queue.async { self.socket.close() }
     }
 
+    /// Available only after the pairing root and full TLS handshake have passed.
+    func authenticatedPeerCertificate() async throws -> Data {
+        try await perform { try self.socket.authenticatedPeerCertificate() }
+    }
+
     private func write(_ data: Data) throws {
         if isTLS { try socket.sendTLSData(data) }
         else { try socket.sendRawData(data) }

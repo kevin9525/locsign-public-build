@@ -31,6 +31,23 @@ The source patch also removes an erroneous provider release from the upstream
 the provider; the caller remains its owner after success, failure, or timeout.
 Tests inject a failing provider into those real FFI functions (and the CoreDevice
 proxy constructor), verify it survives the failed call, then release it once.
+The pinned upstream Rustls verifier also accepted every server certificate and
+TLS handshake signature. Production replaces it with an exact DER device-leaf
+pin and Rustls's crypto-provider signature verification for TLS 1.2 and 1.3.
+`DeviceCertificate` must be the leaf obtained from LocSign's existing
+SecureTransport session after pairing-root trust validation and a successful
+handshake. Neither the pairing root nor a certificate sharing the leaf's public
+key is a substitute. This preserves Apple's SHA1/empty-name certificate format
+without accepting an unauthenticated TLS peer. The native client does not repeat
+hostname or issuer-chain validation; the authenticated leaf pin and handshake
+proof establish the native connection's device identity. Missing or malformed
+leaf pins and invalid host certificate/key identities return errors.
+Ten Rust regression tests run real TLS 1.2/1.3 client/server handshakes in memory,
+using only the repository's public synthetic pairing fixtures. They cover exact
+leaf acceptance, different DER with the same public key, root substitution,
+corrupt handshake signatures, missing pins, and mismatched host identities.
+The source replacement is guarded by the audited upstream verifier's SHA256;
+its implementation and tests are included in the build manifest's hashes.
 Release LTO and embedded bitcode are disabled so the app's Apple linker consumes
 native objects. Symbol inspection uses Rust 1.94.0's matching `llvm-nm`, because
 Xcode's older LLVM cannot parse all standard-library bitcode members.

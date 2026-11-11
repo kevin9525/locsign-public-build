@@ -18,6 +18,18 @@ static BOOL LSLocationAccept(struct IdeviceFfiError *failure, NSString *operatio
     return LSLocationError(error, [NSString stringWithFormat:@"%@失败（错误码 %ld）。请确认开发者模式和 LocalDevVPN 已开启，并检查网络连接。", operation, (long)code], code);
 }
 
+static BOOL LSLocationReadPairing(NSData *data, struct IdevicePairingFile **pairing, NSError **error) {
+    if (!data.length || data.length > 1024 * 1024) {
+        return LSLocationError(error, @"配对文件为空或过大，请重新导入。", -2);
+    }
+    struct IdeviceFfiError *failure = idevice_pairing_file_from_bytes(data.bytes, data.length, pairing);
+    if (!failure) return YES;
+    NSInteger code = failure->code;
+    idevice_error_free(failure);
+    return LSLocationError(error, [NSString stringWithFormat:
+        @"定位模块无法解析配对文件（错误码 %ld）。请更新 LocSign 后重试；此步骤尚未连接开发者服务。", (long)code], code);
+}
+
 static NSData *LSLocationImage(NSURL *directory, NSString *name, NSUInteger expectedSize,
                              NSString *expectedDigest, NSError **error) {
     if (!directory) {
@@ -52,6 +64,13 @@ static NSData *LSLocationImage(NSURL *directory, NSString *name, NSUInteger expe
     struct LocationSimulationHandle *_location;
 }
 
++ (BOOL)validatePairingData:(NSData *)pairingData error:(NSError **)error {
+    struct IdevicePairingFile *pairing = NULL;
+    BOOL accepted = LSLocationReadPairing(pairingData, &pairing, error);
+    if (pairing) idevice_pairing_file_free(pairing);
+    return accepted;
+}
+
 - (instancetype)initWithHost:(NSString *)host pairingData:(NSData *)pairingData
                 ddiDirectory:(NSURL *)ddiDirectory error:(NSError **)error {
     self = [super init];
@@ -67,11 +86,8 @@ static NSData *LSLocationImage(NSURL *directory, NSString *name, NSUInteger expe
     } else {
         LSLocationError(error, @"定位连接需要有效的设备 IP 地址。", -1); return nil;
     }
-    if (!pairingData.length || pairingData.length > 1024 * 1024) {
-        LSLocationError(error, @"配对文件为空或过大，请重新导入。", -2); return nil;
-    }
     struct IdevicePairingFile *pairing = NULL;
-    if (!LSLocationAccept(idevice_pairing_file_from_bytes(pairingData.bytes, pairingData.length, &pairing), @"读取配对文件", error)) return nil;
+    if (!LSLocationReadPairing(pairingData, &pairing, error)) return nil;
     struct IdeviceFfiError *failure = idevice_tcp_provider_new((struct sockaddr *)&storage, pairing, "LocSign", &_provider);
     if (failure) { idevice_pairing_file_free(pairing); LSLocationAccept(failure, @"创建设备连接", error); return nil; }
     // Pairing ownership transferred into provider on success.

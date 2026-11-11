@@ -205,6 +205,7 @@ static OSStatus LSTestWrite(SSLConnectionRef connection, const void *data, size_
     NSError *error = nil;
     LSDeviceSocket *client = [[LSDeviceSocket alloc] initWithHost:@"127.0.0.1" port:port timeout:3 error:&error];
     XCTAssertNotNil(client);
+    XCTAssertNil([client authenticatedPeerCertificateWithError:NULL]);
     NSData *rootData = [NSData dataWithContentsOfURL:[bundle URLForResource:rootName withExtension:@"der"]];
     SecCertificateRef root = SecCertificateCreateWithData(NULL, (__bridge CFDataRef)rootData);
     XCTAssertNotEqual(root, NULL);
@@ -213,6 +214,7 @@ static OSStatus LSTestWrite(SSLConnectionRef connection, const void *data, size_
     if (expectedSuccess) {
         XCTAssertTrue(established, @"%@", error);
         if (established) {
+            XCTAssertEqualObjects([client authenticatedPeerCertificateWithError:NULL], certificateData);
             XCTAssertTrue([client sendTLSData:[@"ping" dataUsingEncoding:NSUTF8StringEncoding] error:&error]);
             if (interruptWaitingRead) {
                 XCTAssertEqual(dispatch_semaphore_wait(peerWaiting,
@@ -234,6 +236,7 @@ static OSStatus LSTestWrite(SSLConnectionRef connection, const void *data, size_
         }
     } else {
         XCTAssertFalse(established);
+        XCTAssertNil([client authenticatedPeerCertificateWithError:NULL]);
         XCTAssertNotNil(error);
         NSError *verificationError = error.userInfo[NSUnderlyingErrorKey];
         XCTAssertEqualObjects(verificationError.domain, @"LocSign.PairingTrust");
@@ -256,6 +259,7 @@ static OSStatus LSTestWrite(SSLConnectionRef connection, const void *data, size_
         }
     }
     [client close];
+    XCTAssertNil([client authenticatedPeerCertificateWithError:NULL]);
     if (interruptWaitingRead) [client close];
     [self waitForExpectations:@[finished] timeout:8];
     CFRelease(identity);
