@@ -3,6 +3,29 @@ import Network
 @testable import LocSign
 
 final class DeviceConnectionProbeTests: XCTestCase {
+    func testNonRespondingDeviceUsesShortReadinessDeadline() async throws {
+        let listener = try NWListener(using: .tcp, on: .any)
+        let ready = expectation(description: "listener ready")
+        let queue = DispatchQueue(label: "com.locsign.tests.silent-device")
+        listener.stateUpdateHandler = { if case .ready = $0 { ready.fulfill() } }
+        listener.newConnectionHandler = { connection in
+            connection.start(queue: queue)
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { _, _, _, _ in
+                // Keep the accepted peer alive but do not answer QueryType.
+                queue.asyncAfter(deadline: .now() + 3) { connection.cancel() }
+            }
+        }
+        listener.start(queue: queue)
+        defer { listener.cancel() }
+        await fulfillment(of: [ready], timeout: 3)
+        let start = Date()
+        do {
+            _ = try await DeviceConnectionProbe().check(host: "127.0.0.1", port: XCTUnwrap(listener.port).rawValue, timeout: 0.15)
+            XCTFail("Silent device must not be considered ready")
+        } catch { XCTAssertTrue(error is LocSignError) }
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2)
+    }
+
     func testLocalServerRespondsWithExpectedService() async throws {
         let listener = try NWListener(using: .tcp, on: .any)
         let ready = expectation(description: "listener ready")

@@ -28,7 +28,10 @@ final class LocationShortcutRunner {
         var url = URLComponents()
         url.scheme = "shortcuts"; url.host = "x-callback-url"; url.path = "/run-shortcut"
         url.queryItems = [URLQueryItem(name: "name", value: name)] + ["success", "error", "cancel"].map {
-            URLQueryItem(name: "x-" + $0, value: "locsign://network-assist/\(id.uuidString)?result=\($0)")
+            // Shortcuts appends its own result query item to x-success. Keep
+            // the callback kind in the path so we do not reject a valid
+            // callback because it contains output parameters.
+            URLQueryItem(name: "x-" + $0, value: "locsign://network-assist/\(id.uuidString)/\($0)")
         }
         guard let request = url.url else { throw LocationControlError.message("无法创建快捷指令地址。") }
         // Do not abandon an in-flight disable shortcut on task cancellation: a late
@@ -53,11 +56,13 @@ final class LocationShortcutRunner {
     func handle(_ url: URL) -> Bool {
         guard url.scheme?.lowercased() == "locsign", url.host == "network-assist",
               url.user == nil, url.password == nil, url.port == nil,
-              let id = UUID(uuidString: String(url.path.dropFirst())), id == pending?.id,
-              let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems else { return false }
-        let results = query.filter { $0.name == "result" }
-        guard results.count == 1, let result = results.first?.value,
-              ["success", "error", "cancel"].contains(result) else { return false }
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              (components.queryItems?.filter({ $0.name == "result" }).count ?? 0) <= 1 else { return false }
+        let parts = url.pathComponents
+        guard parts.count == 3,
+              let id = UUID(uuidString: parts[1]), id == pending?.id,
+              ["success", "error", "cancel"].contains(parts[2]) else { return false }
+        let result = parts[2]
         if result == "success" { finish(id, .success(())) }
         else { finish(id, .failure(LocationControlError.message("快捷指令未完成。请确认名称完全一致、包含“设置蜂窝数据”动作，并允许执行。"))) }
         return true

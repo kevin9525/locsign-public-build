@@ -112,6 +112,23 @@ final class LocationNetworkAssistTests: XCTestCase {
 
 @MainActor
 final class LocationShortcutRunnerTests: XCTestCase {
+    func testTimedOutShortcutRejectsLateCallbackInsteadOfClaimingCompletion() async throws {
+        let launched = expectation(description: "Shortcut launched")
+        let timerStarted = expectation(description: "Timer installed")
+        var request: URL?
+        var expire: CheckedContinuation<Void, Never>?
+        let runner = LocationShortcutRunner(openURL: { request = $0; launched.fulfill(); return true },
+            waitForTimeout: { await withCheckedContinuation { expire = $0; timerStarted.fulfill() } })
+        let task = Task { try await runner.run(.disable) }
+        await fulfillment(of: [launched, timerStarted], timeout: 2)
+        expire?.resume()
+        do { try await task.value; XCTFail() }
+        catch { XCTAssertTrue(error is LocationShortcutRunner.Failure) }
+        let query = try XCTUnwrap(URLComponents(url: XCTUnwrap(request), resolvingAgainstBaseURL: false)?.queryItems)
+        let late = try XCTUnwrap(URL(string: XCTUnwrap(query.first(where: { $0.name == "x-success" })?.value)))
+        XCTAssertFalse(runner.handle(late))
+    }
+
     func testURLLaunchAcknowledgementDoesNotCompleteShortcutAndRejectsStaleCallback() async throws {
         let launched = expectation(description: "Launched shortcut")
         var request: URL?
@@ -123,7 +140,7 @@ final class LocationShortcutRunnerTests: XCTestCase {
         XCTAssertFalse(runner.handle(URL(string: "locsign://network-assist/invalid?result=success")!))
         let query = try XCTUnwrap(URLComponents(url: XCTUnwrap(request), resolvingAgainstBaseURL: false)?.queryItems)
         XCTAssertEqual(query.first(where: { $0.name == "name" })?.value, "LocSign关闭蜂窝数据")
-        let callback = try XCTUnwrap(URL(string: XCTUnwrap(query.first(where: { $0.name == "x-success" })?.value)))
+        let callback = try XCTUnwrap(URL(string: XCTUnwrap(query.first(where: { $0.name == "x-success" })?.value) + "?result=shortcut-output"))
         XCTAssertTrue(runner.handle(callback))
         try await task.value
         XCTAssertTrue(completed)
@@ -139,7 +156,7 @@ final class LocationShortcutRunnerTests: XCTestCase {
         let task = Task { try await runner.run(.disable) }
         await fulfillment(of: [launched], timeout: 2)
         let query = try XCTUnwrap(URLComponents(url: XCTUnwrap(request), resolvingAgainstBaseURL: false)?.queryItems)
-        let callback = try XCTUnwrap(URL(string: XCTUnwrap(query.first(where: { $0.name == "x-cancel" })?.value)))
+        let callback = try XCTUnwrap(URL(string: XCTUnwrap(query.first(where: { $0.name == "x-cancel" })?.value) + "?result=cancelled"))
         XCTAssertTrue(runner.handle(callback))
         do { try await task.value; XCTFail() } catch { }
     }
