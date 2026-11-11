@@ -7,8 +7,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.4.2"
-    CURRENT_PROJECT_VERSION: "21"
+    MARKETING_VERSION: "0.4.3"
+    CURRENT_PROJECT_VERSION: "22"
     GENERATE_INFOPLIST_FILE: NO
 packages:
   OpenSSL:
@@ -54,6 +54,9 @@ targets:
       path: App/Sources/Info.plist
       properties:
         CFBundleDisplayName: LocSign
+        CFBundleURLTypes:
+          - CFBundleURLName: com.locsign.network-assist
+            CFBundleURLSchemes: [locsign]
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         UIFileSharingEnabled: true

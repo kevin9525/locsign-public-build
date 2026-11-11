@@ -15,16 +15,30 @@ final class LocationViewModel: ObservableObject {
     @Published private(set) var isSearching = false
     @Published private(set) var status = "尚未应用模拟定位"
     @Published private(set) var error: String?
+    @Published private(set) var networkAssistStatus: String?
+    @Published private(set) var requiresCellularRestore = false
+    @Published private(set) var cellularRestoreWarning: String?
     private let settings: InstallationSettings
     private let controller: any DeviceLocationControlling
+    private let networkAssist: LocationNetworkAssist
+    private let shortcutRunner: LocationShortcutRunner
+    private var sessionFailure: String?
     private var search: MKLocalSearch?
     private var searchID = UUID()
     private var operation: Task<Void, Never>?
     private var backgrounded = false
 
-    init(settings: InstallationSettings, controller: (any DeviceLocationControlling)? = nil) {
+    init(settings: InstallationSettings, controller: (any DeviceLocationControlling)? = nil,
+         networkAssist: LocationNetworkAssist? = nil) {
         let controller = controller ?? DeviceLocationController()
         self.settings = settings; self.controller = controller
+        let runner = LocationShortcutRunner()
+        shortcutRunner = runner
+        self.networkAssist = networkAssist ?? LocationNetworkAssist(defaults: settings.defaults,
+            runShortcut: { try await runner.run($0) },
+            probe: { host, timeout in _ = try await DeviceConnectionProbe().check(host: host, timeout: timeout) })
+        self.networkAssist.onChange = { [weak self] in self?.updateNetworkAssistState() }
+        updateNetworkAssistState()
         inputSystem = settings.defaults.string(forKey: "location.coordinateSystem")
             .flatMap(LocationCoordinateSystem.init(rawValue:)) ?? .wgs84
         mapRegion = settings.defaults.string(forKey: "location.mapRegion")
@@ -33,6 +47,7 @@ final class LocationViewModel: ObservableObject {
             Task { @MainActor in
                 self?.status = "定位连接中断，当前设备状态未确认"
                 self?.error = ProvisioningRedaction.redact(message)
+                self?.sessionFailure = ProvisioningRedaction.redact(message)
             }
         }
         if let lat = settings.defaults.object(forKey: "location.latitude") as? Double,
@@ -100,6 +115,22 @@ final class LocationViewModel: ObservableObject {
     }
     func apply() { start(clear: false) }
     func restore() { start(clear: true) }
+    func applyWithoutWiFi() { start(clear: false, useNetworkAssist: true) }
+    func restoreWithoutWiFi() { start(clear: true, useNetworkAssist: true) }
+    func handleURL(_ url: URL) { shortcutRunner.handle(url) }
+    private func updateNetworkAssistState() {
+        networkAssistStatus = networkAssist.status
+        requiresCellularRestore = networkAssist.requiresRestore
+        cellularRestoreWarning = networkAssist.restoreWarning
+    }
+    func restoreCellularData() {
+        guard !isBusy, requiresCellularRestore, let token = settings.beginOperation() else { return }
+        isBusy = true
+        operation = Task {
+            defer { isBusy = false; operation = nil; settings.endOperation(token) }
+            await networkAssist.restoreData()
+        }
+    }
     func cancel() { operation?.cancel(); if isBusy { status = "正在取消，等待当前设备请求结束…" } }
     func markForeground() { backgrounded = false }
     func markBackground() {
@@ -118,7 +149,7 @@ final class LocationViewModel: ObservableObject {
         }
         return try LocationCoordinate(latitude: lat, longitude: lon)
     }
-    private func start(clear: Bool) {
+    private func start(clear: Bool, useNetworkAssist: Bool = false) {
         guard !isBusy, settings.operationID == nil else { return }
         guard let pairing = settings.pairing?.data else { error = "请先在安装页导入这台手机的配对文件"; return }
         let coordinate: LocationCoordinate?
@@ -130,16 +161,25 @@ final class LocationViewModel: ObservableObject {
         }
         catch { self.error = error.localizedDescription; return }
         guard let token = settings.beginOperation() else { return }
-        isBusy = true; error = nil
+        isBusy = true; error = nil; sessionFailure = nil
         status = clear ? "正在连接并恢复真实定位…" : "正在准备开发者服务并应用定位…"
         let host = settings.host
         operation = Task {
             defer { isBusy = false; operation = nil; settings.endOperation(token) }
             do {
-                if clear { try await controller.clear(host: host, pairingData: pairing) }
-                else if let coordinate { try await controller.set(coordinate, host: host, pairingData: pairing) }
+                let perform: () async throws -> Void = { [self] in
+                    if clear { try await controller.clear(host: host, pairingData: pairing) }
+                    else if let coordinate { try await controller.set(coordinate, host: host, pairingData: pairing) }
+                }
+                if useNetworkAssist {
+                    // Do not reuse a session from the network before the shortcut.
+                    await controller.disconnect()
+                    try await networkAssist.run(host: host, operation: perform)
+                } else { try await perform() }
                 try Task.checkCancellation()
                 status = clear ? "设备已接受恢复真实定位" : backgrounded ? "应用进入后台，定位连接持续性未确认；回到前台后可重新应用或恢复" : "设备已接受模拟坐标，保持当前页面可维持连接"
+                if useNetworkAssist && !clear { status = "设备已接受本次模拟坐标；蜂窝数据切换后请在地图中核对，持续定位尚待确认" }
+                if let sessionFailure { status = "定位连接中断，当前设备状态未确认"; error = sessionFailure }
                 if !clear, let input {
                     inputSystem = system
                     storeSelection(input)

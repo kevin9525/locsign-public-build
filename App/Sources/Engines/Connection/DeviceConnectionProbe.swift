@@ -8,12 +8,13 @@ struct ConnectionProbeResult {
 
 /// Read-only transport check. A successful QueryType is NOT pairing or installation.
 final class DeviceConnectionProbe {
-    func check(host: String, port: UInt16 = 62078) async throws -> ConnectionProbeResult {
+    func check(host: String, port: UInt16 = 62078, timeout: TimeInterval = 8) async throws -> ConnectionProbeResult {
         let address = host.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !address.isEmpty, !address.contains("://"), !address.contains("/"), port > 0 else {
             throw LocSignError.install("请输入设备或本地 VPN 提供的 IP 地址")
         }
-        let session = ProbeSession(host: address, port: port)
+        guard timeout.isFinite, timeout > 0, timeout <= 30 else { throw LocSignError.install("设备连接超时设置无效") }
+        let session = ProbeSession(host: address, port: port, timeout: timeout)
         return try await withTaskCancellationHandler(operation: {
             try Task.checkCancellation()
             return try await session.run()
@@ -32,8 +33,10 @@ private final class ProbeSession {
     private var finished = false
     private var cancelled = false
     private let started = Date()
+    private let timeoutInterval: TimeInterval
 
-    init(host: String, port: UInt16) {
+    init(host: String, port: UInt16, timeout: TimeInterval) {
+        timeoutInterval = timeout
         connection = NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
     }
 
@@ -49,7 +52,7 @@ private final class ProbeSession {
                     self?.finish(.failure(LocSignError.install("连接超时，请检查设备地址、本地 VPN 和本地网络权限")))
                 }
                 self.timeout = deadline
-                self.queue.asyncAfter(deadline: .now() + 8, execute: deadline)
+                self.queue.asyncAfter(deadline: .now() + self.timeoutInterval, execute: deadline)
                 self.connection.stateUpdateHandler = { state in
                     switch state {
                     case .ready: self.sendQuery()

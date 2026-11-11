@@ -5,6 +5,35 @@ import CoreLocation
 
 @MainActor
 final class LocationViewModelTests: XCTestCase {
+    func testAssistedApplyWaitsForNetworkAndUsesConvertedCoordinate() async throws {
+        let fixture = try setup()
+        var events: [String] = []
+        let assist = LocationNetworkAssist(defaults: fixture.settings.defaults,
+            runShortcut: { events.append($0.rawValue) }, probe: { _, _ in events.append("ready") })
+        let model = LocationViewModel(settings: fixture.settings, controller: fixture.controller, networkAssist: assist)
+        model.selectSearchCoordinate(.init(latitude: 31.839047, longitude: 118.815859), countryCode: "CN")
+        await perform(model) { model.applyWithoutWiFi() }
+        XCTAssertEqual(events, ["disable", "ready", "enable"])
+        XCTAssertEqual(try XCTUnwrap(fixture.controller.setRequests.first?.coordinate.latitude), 31.841097105, accuracy: 0.00000001)
+        XCTAssertFalse(model.requiresCellularRestore)
+        XCTAssertNil(fixture.settings.operationID)
+    }
+
+    func testAssistedFailureDoesNotPersistSelectionAndKeepsRecoveryVisible() async throws {
+        let fixture = try setup()
+        let assist = LocationNetworkAssist(defaults: fixture.settings.defaults,
+            runShortcut: { _ in throw URLError(.timedOut) }, probe: { _, _ in XCTFail() })
+        let model = LocationViewModel(settings: fixture.settings, controller: fixture.controller, networkAssist: assist)
+        enterValidCoordinate(model)
+        await perform(model) { model.applyWithoutWiFi() }
+        XCTAssertTrue(fixture.controller.setRequests.isEmpty)
+        XCTAssertNil(fixture.settings.defaults.object(forKey: "location.latitude"))
+        XCTAssertTrue(model.requiresCellularRestore)
+        XCTAssertNotNil(model.cellularRestoreWarning)
+        XCTAssertNotNil(model.error)
+        XCTAssertNil(fixture.settings.operationID)
+    }
+
     func testMainlandSearchSelectionIsConvertedOnlyAtDeviceBoundaryAndSurvivesRelaunch() async throws {
         let fixture = try setup()
         let point = CLLocationCoordinate2D(latitude: 31.839047, longitude: 118.815859)

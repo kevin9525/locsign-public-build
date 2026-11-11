@@ -50,6 +50,7 @@ struct LocSignApp: App {
                     .tabItem { Label("连接", systemImage: "cable.connector") }
             }
             .task { await services.activate() }
+            .onOpenURL { services.location.handleURL($0) }
             .onChange(of: phase) { _, value in
                 if value == .active { Task { await services.activate() } }
                 else if value == .background {
