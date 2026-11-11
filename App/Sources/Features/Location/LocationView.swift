@@ -10,6 +10,9 @@ struct LocationView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+                    Picker("地图区域", selection: Binding(get: { model.mapRegion }, set: model.setMapRegion)) {
+                        ForEach(LocationMapRegion.allCases) { Text($0.title).tag($0) }
+                    }.disabled(model.isBusy)
                     MapReader { proxy in
                         Map(position: $position) {
                             if let selected = model.selected {
@@ -18,7 +21,7 @@ struct LocationView: View {
                         }
                         .mapControls { MapCompass(); MapScaleView() }
                         .onTapGesture { point in
-                            if let coordinate = proxy.convert(point, from: .local) { model.select(coordinate) }
+                            if let coordinate = proxy.convert(point, from: .local) { model.selectMapCoordinate(coordinate) }
                         }
                     }.frame(height: 280).clipShape(RoundedRectangle(cornerRadius: 16))
                     HStack {
@@ -30,7 +33,7 @@ struct LocationView: View {
                     ForEach(Array(model.searchResults.enumerated()), id: \.offset) { _, item in
                         Button {
                             let point = item.placemark.coordinate
-                            model.select(point)
+                            model.selectSearchCoordinate(point, countryCode: item.placemark.isoCountryCode)
                             position = .region(.init(center: point, span: .init(latitudeDelta: 0.02, longitudeDelta: 0.02)))
                         } label: {
                             VStack(alignment: .leading) {
@@ -39,10 +42,15 @@ struct LocationView: View {
                             }.frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
+                    Picker("输入坐标类型", selection: Binding(get: { model.inputSystem }, set: model.setInputSystem)) {
+                        ForEach(LocationCoordinateSystem.allCases) { Text($0.title).tag($0) }
+                    }.disabled(model.isBusy)
+                    Text("搜索结果会自动选择坐标类型。大陆地图选点会纠偏后发送给设备；粘贴 GPS 经纬度时请选择 WGS-84。地图区域仅决定选点和显示方式，不会切换地图提供方。")
+                        .font(.caption).foregroundStyle(.secondary)
                     HStack {
                         TextField("纬度 −90…90", text: $model.latitude).textFieldStyle(.roundedBorder)
                         TextField("经度 −180…180", text: $model.longitude).textFieldStyle(.roundedBorder)
-                    }.textInputAutocapitalization(.never).autocorrectionDisabled()
+                    }.textInputAutocapitalization(.never).autocorrectionDisabled().disabled(model.isBusy)
                     Button("在地图上显示坐标") {
                         model.selectManual()
                         if let point = model.selected { position = .region(.init(center: point, span: .init(latitudeDelta: 0.02, longitudeDelta: 0.02))) }

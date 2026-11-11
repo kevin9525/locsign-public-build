@@ -7,6 +7,8 @@ final class LocationViewModel: ObservableObject {
     @Published var latitude = ""
     @Published var longitude = ""
     @Published var searchText = ""
+    @Published private(set) var inputSystem: LocationCoordinateSystem = .wgs84
+    @Published private(set) var mapRegion: LocationMapRegion = .mainlandChina
     @Published private(set) var searchResults: [MKMapItem] = []
     @Published private(set) var selected: CLLocationCoordinate2D?
     @Published private(set) var isBusy = false
@@ -23,6 +25,10 @@ final class LocationViewModel: ObservableObject {
     init(settings: InstallationSettings, controller: (any DeviceLocationControlling)? = nil) {
         let controller = controller ?? DeviceLocationController()
         self.settings = settings; self.controller = controller
+        inputSystem = settings.defaults.string(forKey: "location.coordinateSystem")
+            .flatMap(LocationCoordinateSystem.init(rawValue:)) ?? .wgs84
+        mapRegion = settings.defaults.string(forKey: "location.mapRegion")
+            .flatMap(LocationMapRegion.init(rawValue:)) ?? .mainlandChina
         controller.onSessionFailure = { [weak self] message in
             Task { @MainActor in
                 self?.status = "定位连接中断，当前设备状态未确认"
@@ -31,20 +37,50 @@ final class LocationViewModel: ObservableObject {
         }
         if let lat = settings.defaults.object(forKey: "location.latitude") as? Double,
            let lon = settings.defaults.object(forKey: "location.longitude") as? Double,
-           (try? LocationCoordinate(latitude: lat, longitude: lon)) != nil {
-            select(CLLocationCoordinate2D(latitude: lat, longitude: lon))
+           let point = try? LocationCoordinate(latitude: lat, longitude: lon) {
+            storeSelection(point)
         }
     }
-    func select(_ point: CLLocationCoordinate2D) {
-        guard !isBusy, (try? LocationCoordinate(latitude: point.latitude, longitude: point.longitude)) != nil else { return }
-        selected = point
+    func selectMapCoordinate(_ point: CLLocationCoordinate2D) {
+        guard !isBusy, let coordinate = try? LocationCoordinate(latitude: point.latitude, longitude: point.longitude) else { return }
+        inputSystem = mapRegion.coordinateSystem
+        storeSelection(coordinate)
+    }
+    func selectSearchCoordinate(_ point: CLLocationCoordinate2D, countryCode: String?) {
+        guard !isBusy, let coordinate = try? LocationCoordinate(latitude: point.latitude, longitude: point.longitude) else { return }
+        if let country = countryCode?.uppercased(), !country.isEmpty {
+            mapRegion = country == "CN" ? .mainlandChina : .otherRegions
+        }
+        inputSystem = mapRegion.coordinateSystem
+        storeSelection(coordinate)
+    }
+    func setInputSystem(_ system: LocationCoordinateSystem) {
+        guard !isBusy else { return }
+        inputSystem = system
+        selected = nil // The new interpretation is previewed explicitly or after apply.
+    }
+    func setMapRegion(_ region: LocationMapRegion) {
+        guard !isBusy else { return }
+        mapRegion = region
+        settings.defaults.set(region.rawValue, forKey: "location.mapRegion")
+        if let input = try? enteredCoordinate() { selected = try? displayedCoordinate(input, system: inputSystem) }
+    }
+    private func displayedCoordinate(_ input: LocationCoordinate, system: LocationCoordinateSystem) throws -> CLLocationCoordinate2D {
+        let point = try LocationCoordinateConversion.convert(input, from: system, to: mapRegion.coordinateSystem)
+        return .init(latitude: point.latitude, longitude: point.longitude)
+    }
+    private func storeSelection(_ point: LocationCoordinate) {
+        selected = try? displayedCoordinate(point, system: inputSystem)
         latitude = String(format: "%.6f", point.latitude)
         longitude = String(format: "%.6f", point.longitude)
         settings.defaults.set(point.latitude, forKey: "location.latitude")
         settings.defaults.set(point.longitude, forKey: "location.longitude")
+        settings.defaults.set(inputSystem.rawValue, forKey: "location.coordinateSystem")
+        settings.defaults.set(mapRegion.rawValue, forKey: "location.mapRegion")
     }
     func selectManual() {
-        do { let coordinate = try enteredCoordinate(); select(.init(latitude: coordinate.latitude, longitude: coordinate.longitude)); error = nil }
+        guard !isBusy else { return }
+        do { let coordinate = try enteredCoordinate(); _ = try displayedCoordinate(coordinate, system: inputSystem); storeSelection(coordinate); error = nil }
         catch { self.error = error.localizedDescription }
     }
     func searchAddress() async {
@@ -86,7 +122,12 @@ final class LocationViewModel: ObservableObject {
         guard !isBusy, settings.operationID == nil else { return }
         guard let pairing = settings.pairing?.data else { error = "请先在安装页导入这台手机的配对文件"; return }
         let coordinate: LocationCoordinate?
-        do { coordinate = try (clear ? nil : enteredCoordinate()) }
+        let input: LocationCoordinate?
+        let system = inputSystem
+        do {
+            input = try (clear ? nil : enteredCoordinate())
+            coordinate = try input.map { try LocationCoordinateConversion.convert($0, from: system, to: .wgs84) }
+        }
         catch { self.error = error.localizedDescription; return }
         guard let token = settings.beginOperation() else { return }
         isBusy = true; error = nil
@@ -99,10 +140,9 @@ final class LocationViewModel: ObservableObject {
                 else if let coordinate { try await controller.set(coordinate, host: host, pairingData: pairing) }
                 try Task.checkCancellation()
                 status = clear ? "设备已接受恢复真实定位" : backgrounded ? "应用进入后台，定位连接持续性未确认；回到前台后可重新应用或恢复" : "设备已接受模拟坐标，保持当前页面可维持连接"
-                if !clear, let coordinate {
-                    selected = .init(latitude: coordinate.latitude, longitude: coordinate.longitude)
-                    settings.defaults.set(coordinate.latitude, forKey: "location.latitude")
-                    settings.defaults.set(coordinate.longitude, forKey: "location.longitude")
+                if !clear, let input {
+                    inputSystem = system
+                    storeSelection(input)
                 }
             } catch {
                 status = "操作未完成，设备定位状态未确认"

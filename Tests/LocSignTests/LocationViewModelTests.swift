@@ -1,9 +1,95 @@
 import XCTest
 import Combine
+import CoreLocation
 @testable import LocSign
 
 @MainActor
 final class LocationViewModelTests: XCTestCase {
+    func testMainlandSearchSelectionIsConvertedOnlyAtDeviceBoundaryAndSurvivesRelaunch() async throws {
+        let fixture = try setup()
+        let point = CLLocationCoordinate2D(latitude: 31.839047, longitude: 118.815859)
+        fixture.model.selectSearchCoordinate(point, countryCode: "CN")
+        XCTAssertEqual(fixture.model.inputSystem, .gcj02)
+        XCTAssertEqual(fixture.model.mapRegion, .mainlandChina)
+        for _ in 0..<2 { await perform(fixture.model) { fixture.model.apply() } }
+        XCTAssertEqual(fixture.controller.setRequests.count, 2)
+        for request in fixture.controller.setRequests {
+            XCTAssertEqual(request.coordinate.latitude, 31.841097105, accuracy: 0.00000001)
+            XCTAssertEqual(request.coordinate.longitude, 118.810721382, accuracy: 0.00000001)
+        }
+        XCTAssertEqual(fixture.model.selected?.latitude, point.latitude)
+        XCTAssertEqual(fixture.model.selected?.longitude, point.longitude)
+        XCTAssertEqual(fixture.model.latitude, "31.839047")
+        XCTAssertEqual(fixture.settings.defaults.double(forKey: "location.latitude"), point.latitude)
+        let reopenedController = LocationControllerFixture()
+        let reopened = LocationViewModel(settings: fixture.settings, controller: reopenedController)
+        XCTAssertEqual(reopened.inputSystem, .gcj02)
+        XCTAssertEqual(reopened.selected?.longitude, point.longitude)
+        await perform(reopened) { reopened.apply() }
+        let resent = try XCTUnwrap(reopenedController.setRequests.first?.coordinate)
+        XCTAssertEqual(resent.latitude, 31.841097105, accuracy: 0.00000001)
+        XCTAssertEqual(resent.longitude, 118.810721382, accuracy: 0.00000001)
+    }
+
+    func testManualGPSInputIsNotConvertedTwiceButDisplaysOnMainlandMap() async throws {
+        let fixture = try setup()
+        fixture.model.setMapRegion(.mainlandChina)
+        fixture.model.latitude = "31.841097"
+        fixture.model.longitude = "118.810721"
+        fixture.model.setInputSystem(.wgs84)
+        await perform(fixture.model) { fixture.model.apply() }
+        let sent = try XCTUnwrap(fixture.controller.setRequests.first?.coordinate)
+        XCTAssertEqual(sent.latitude, 31.841097)
+        XCTAssertEqual(sent.longitude, 118.810721)
+        XCTAssertEqual(try XCTUnwrap(fixture.model.selected?.latitude), 31.839047, accuracy: 0.000001)
+        XCTAssertEqual(try XCTUnwrap(fixture.model.selected?.longitude), 118.815859, accuracy: 0.000001)
+    }
+
+    func testMapTapUsesExplicitMapRegion() async throws {
+        let fixture = try setup()
+        fixture.model.setMapRegion(.mainlandChina)
+        fixture.model.selectMapCoordinate(.init(latitude: 31.839047, longitude: 118.815859))
+        await perform(fixture.model) { fixture.model.apply() }
+        XCTAssertEqual(try XCTUnwrap(fixture.controller.setRequests.first?.coordinate.latitude), 31.841097105, accuracy: 0.00000001)
+    }
+
+    func testSearchOutsideMainlandDoesNotUseBoundingBoxToInferCoordinateSystem() async throws {
+        for (country, point) in [("HK", CLLocationCoordinate2D(latitude: 22.3193, longitude: 114.1694)),
+                                 ("MO", CLLocationCoordinate2D(latitude: 22.1987, longitude: 113.5439)),
+                                 ("TW", CLLocationCoordinate2D(latitude: 25.0330, longitude: 121.5654)),
+                                 ("GB", CLLocationCoordinate2D(latitude: 51.5074, longitude: -0.1278))] {
+            let fixture = try setup()
+            fixture.model.selectSearchCoordinate(point, countryCode: country)
+            await perform(fixture.model) { fixture.model.apply() }
+            XCTAssertEqual(fixture.model.mapRegion, .otherRegions)
+            XCTAssertEqual(fixture.model.inputSystem, .wgs84)
+            let sent = try XCTUnwrap(fixture.controller.setRequests.first?.coordinate)
+            XCTAssertEqual(sent.latitude, point.latitude, accuracy: 0.000001)
+            XCTAssertEqual(sent.longitude, point.longitude, accuracy: 0.000001)
+        }
+    }
+
+    func testLegacySavedCoordinatesKeepTheirOriginalGPSMeaning() throws {
+        let fixture = try setup()
+        fixture.settings.defaults.set(31.841097, forKey: "location.latitude")
+        fixture.settings.defaults.set(118.810721, forKey: "location.longitude")
+        fixture.settings.defaults.removeObject(forKey: "location.coordinateSystem")
+        let reopened = LocationViewModel(settings: fixture.settings, controller: LocationControllerFixture())
+        XCTAssertEqual(reopened.inputSystem, .wgs84)
+        XCTAssertEqual(reopened.latitude, "31.841097")
+        XCTAssertEqual(reopened.longitude, "118.810721")
+    }
+
+    func testChangingDisplayedMapRegionDoesNotChangeDeviceCoordinateOrInputType() async throws {
+        let fixture = try setup()
+        fixture.model.selectSearchCoordinate(.init(latitude: 31.839047, longitude: 118.815859), countryCode: "CN")
+        fixture.model.setMapRegion(.otherRegions)
+        XCTAssertEqual(fixture.model.inputSystem, .gcj02)
+        await perform(fixture.model) { fixture.model.apply() }
+        XCTAssertEqual(try XCTUnwrap(fixture.controller.setRequests.first?.coordinate.latitude), 31.841097105, accuracy: 0.00000001)
+        XCTAssertEqual(try XCTUnwrap(fixture.model.selected?.latitude), 31.841097105, accuracy: 0.00000001)
+    }
+
     func testInvalidManualCoordinatesNeverReachDeviceController() throws {
         let fixture = try setup()
         for input in [("not-a-number", "0"), ("nan", "0"), ("infinity", "0"),
@@ -182,6 +268,7 @@ final class LocationViewModelTests: XCTestCase {
         let suite = UUID().uuidString
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(suite)
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defaults.set(LocationMapRegion.otherRegions.rawValue, forKey: "location.mapRegion")
         addTeardownBlock {
             defaults.removePersistentDomain(forName: suite)
             try? FileManager.default.removeItem(at: directory)
