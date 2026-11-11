@@ -38,6 +38,24 @@ final class LocationPairingTests: XCTestCase {
         _ = try PairingRecord(data: prepared).tlsIdentity()
     }
 
+    func testPreparedDevicePinIsDistinctFromHostCertificate() throws {
+        let original = try fixture("pairing-record-pem", "plist")
+        let device = try fixture("pairing-location-device", "der")
+        let host = try fixture("pairing-host-cert", "der")
+        XCTAssertNotEqual(host, device)
+        let prepared = try LocationPairingRecord.prepare(original, authenticatedDeviceCertificate: device)
+        try LSDeviceLocationSession.validatePairingData(prepared)
+        let values = try dictionary(prepared)
+        func der(_ field: String) throws -> Data {
+            let bytes = try XCTUnwrap(values[field] as? Data)
+            let pem = try XCTUnwrap(String(data: bytes, encoding: .utf8))
+            let payload = pem.components(separatedBy: .newlines).filter { !$0.hasPrefix("-----") }.joined()
+            return try XCTUnwrap(Data(base64Encoded: payload))
+        }
+        XCTAssertEqual(try der("DeviceCertificate"), device)
+        XCTAssertEqual(try der("HostCertificate"), host)
+    }
+
     func testFullRecordPreservesEscrowButDoesNotPassRootSigningKeyToNativeLibrary() throws {
         var values = try dictionary(fixture("pairing-record-pem", "plist"))
         let peer = try fixture("pairing-host-cert", "der")
