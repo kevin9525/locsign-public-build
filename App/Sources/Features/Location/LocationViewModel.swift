@@ -2,6 +2,13 @@ import Foundation
 import Combine
 import MapKit
 
+enum LocationConnectionMode: String, CaseIterable, Identifiable {
+    case direct, assisted
+
+    var id: String { rawValue }
+    var title: String { self == .direct ? "直接连接" : "无 Wi-Fi 辅助" }
+}
+
 @MainActor
 final class LocationViewModel: ObservableObject {
     @Published var latitude = ""
@@ -18,6 +25,8 @@ final class LocationViewModel: ObservableObject {
     @Published private(set) var networkAssistStatus: String?
     @Published private(set) var requiresCellularRestore = false
     @Published private(set) var cellularRestoreWarning: String?
+    @Published private(set) var connectionMode: LocationConnectionMode
+    @Published private(set) var restorationNotice: String?
     private let settings: InstallationSettings
     private let controller: any DeviceLocationControlling
     private let networkAssist: LocationNetworkAssist
@@ -32,6 +41,8 @@ final class LocationViewModel: ObservableObject {
          networkAssist: LocationNetworkAssist? = nil) {
         let controller = controller ?? DeviceLocationController()
         self.settings = settings; self.controller = controller
+        connectionMode = settings.defaults.string(forKey: "location.connectionMode")
+            .flatMap(LocationConnectionMode.init(rawValue:)) ?? .direct
         let runner = LocationShortcutRunner()
         shortcutRunner = runner
         self.networkAssist = networkAssist ?? LocationNetworkAssist(defaults: settings.defaults,
@@ -48,6 +59,7 @@ final class LocationViewModel: ObservableObject {
                 self?.status = "定位连接中断，当前设备状态未确认"
                 self?.error = ProvisioningRedaction.redact(message)
                 self?.sessionFailure = ProvisioningRedaction.redact(message)
+                self?.restorationNotice = nil
             }
         }
         if let lat = settings.defaults.object(forKey: "location.latitude") as? Double,
@@ -113,10 +125,13 @@ final class LocationViewModel: ObservableObject {
             searchResults = Array(response.mapItems.prefix(15)); error = nil
         } catch { if searchID == id { self.error = "地址搜索失败：" + error.localizedDescription } }
     }
-    func apply() { start(clear: false) }
-    func restore() { start(clear: true) }
-    func applyWithoutWiFi() { start(clear: false, useNetworkAssist: true) }
-    func restoreWithoutWiFi() { start(clear: true, useNetworkAssist: true) }
+    func setConnectionMode(_ mode: LocationConnectionMode) {
+        guard !isBusy, settings.operationID == nil, !networkAssist.requiresRestore else { return }
+        connectionMode = mode
+        settings.defaults.set(mode.rawValue, forKey: "location.connectionMode")
+    }
+    func apply() { start(clear: false, useNetworkAssist: connectionMode == .assisted) }
+    func restore() { start(clear: true, useNetworkAssist: connectionMode == .assisted) }
     func handleURL(_ url: URL) { shortcutRunner.handle(url) }
     private func updateNetworkAssistState() {
         networkAssistStatus = networkAssist.status
@@ -140,6 +155,7 @@ final class LocationViewModel: ObservableObject {
     func settingsChanged() async {
         operation?.cancel()
         await controller.disconnect()
+        restorationNotice = nil
         status = "设备设置已变化，请重新应用或恢复定位"
     }
     private func enteredCoordinate() throws -> LocationCoordinate {
@@ -161,7 +177,7 @@ final class LocationViewModel: ObservableObject {
         }
         catch { self.error = error.localizedDescription; return }
         guard let token = settings.beginOperation() else { return }
-        isBusy = true; error = nil; sessionFailure = nil
+        isBusy = true; error = nil; sessionFailure = nil; restorationNotice = nil
         status = clear ? "正在连接并恢复真实定位…" : "正在准备开发者服务并应用定位…"
         let host = settings.host
         operation = Task {
@@ -180,6 +196,9 @@ final class LocationViewModel: ObservableObject {
                 status = clear ? "设备已接受恢复真实定位" : backgrounded ? "应用进入后台，定位连接持续性未确认；回到前台后可重新应用或恢复" : "设备已接受模拟坐标，保持当前页面可维持连接"
                 if useNetworkAssist && !clear { status = "设备已接受本次模拟坐标；蜂窝数据切换后请在地图中核对，持续定位尚待确认" }
                 if let sessionFailure { status = "定位连接中断，当前设备状态未确认"; error = sessionFailure }
+                else if clear {
+                    restorationNotice = "已停止发送模拟位置。其他 App 可能暂时显示旧地址，可点“重新定位”或重新打开 App；保存的城市和收货地址需手动切换。请以地图定位箭头获取的蓝点核对当前位置。"
+                }
                 if !clear, let input {
                     inputSystem = system
                     storeSelection(input)

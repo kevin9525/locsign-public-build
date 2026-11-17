@@ -55,21 +55,26 @@ struct LocationView: View {
                         model.selectManual()
                         if let point = model.selected { position = .region(.init(center: point, span: .init(latitudeDelta: 0.02, longitudeDelta: 0.02))) }
                     }
+                    Picker("定位连接方式", selection: Binding(get: { model.connectionMode }, set: model.setConnectionMode)) {
+                        ForEach(LocationConnectionMode.allCases) { Text($0.title).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(model.isBusy || settings.operationID != nil || model.requiresCellularRestore)
+                    Text(model.connectionMode == .assisted
+                         ? "应用和恢复都会先暂时关闭蜂窝数据，完成后尝试恢复。已记住此方式；请保持 LocalDevVPN 开启。"
+                         : "应用和恢复都会直接连接设备。连接 Wi-Fi 时通常可用；关闭 Wi-Fi 后连接失败，可选择“无 Wi-Fi 辅助”。")
+                        .font(.footnote).foregroundStyle(.secondary)
                     HStack {
                         Button("应用定位", action: model.apply).buttonStyle(.borderedProminent)
                         Button("恢复真实定位", action: model.restore).buttonStyle(.bordered)
                     }.disabled(model.isBusy || settings.operationID != nil)
-                    DisclosureGroup("无 Wi-Fi 辅助（实验）") {
+                    DisclosureGroup("无 Wi-Fi 辅助设置与说明") {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("适用于 LocalDevVPN 已开启、但使用蜂窝数据时无法连接设备的情况。将暂时关闭蜂窝数据，等待设备服务后执行定位，再尝试开启蜂窝数据。首次准备或手机重启后，请先连接 Wi-Fi 成功应用一次定位。")
                             Text("首次设置：在 iOS“快捷指令”App 中创建以下两条快捷指令。每条只需添加一个“设置蜂窝数据”动作；不要使用“切换”，不要添加“打开 App”动作。")
                             Text("① LocSign关闭蜂窝数据\n设置蜂窝数据 → 关闭\n\n② LocSign开启蜂窝数据\n设置蜂窝数据 → 打开")
                                 .textSelection(.enabled)
-                            Text("名称须完全一致。运行时允许快捷指令执行，完成后会自动返回 LocSign。此兼容路径尚需真机验证，不能保证恢复数据后连接继续保持。")
-                            HStack {
-                                Button("无 Wi-Fi 应用定位", action: model.applyWithoutWiFi)
-                                Button("无 Wi-Fi 恢复定位", action: model.restoreWithoutWiFi)
-                            }.buttonStyle(.bordered).disabled(model.isBusy || settings.operationID != nil)
+                            Text("名称须完全一致。已有这两条快捷指令可直接复用。选择上方“无 Wi-Fi 辅助”后，使用“应用定位”或“恢复真实定位”。运行时允许快捷指令执行，完成后会自动返回 LocSign；恢复数据后连接可能中断。")
                         }.font(.footnote).padding(.top, 8)
                     }
                     if let networkStatus = model.networkAssistStatus { Text(networkStatus).font(.subheadline) }
@@ -88,8 +93,12 @@ struct LocationView: View {
                         }
                     }
                     Text(model.status).font(.subheadline)
+                    if let notice = model.restorationNotice {
+                        Label(notice, systemImage: "info.circle")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
                     if let error = model.error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
-                    Text("首次使用请开启 iOS 开发者模式并重启确认，保持设备解锁和 LocalDevVPN 开启。首次准备会联网向 Apple 申请开发者镜像个性化。系统可能在后台挂起定位连接；恢复按钮收到设备成功响应后才会显示已恢复。")
+                    Text("首次使用请开启 iOS 开发者模式并重启确认，保持设备解锁和 LocalDevVPN 开启。首次准备会联网向 Apple 申请开发者镜像个性化。系统可能在后台挂起定位连接；恢复按钮显示的是设备对恢复请求的响应，其他 App 刷新位置可能有延迟。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }.padding()
             }

@@ -5,6 +5,104 @@ import CoreLocation
 
 @MainActor
 final class LocationViewModelTests: XCTestCase {
+    func testRememberedAssistedModeRoutesMainApplyAndRestoreAfterRelaunch() async throws {
+        let fixture = try setup()
+        var events: [String] = []
+        let assist = LocationNetworkAssist(defaults: fixture.settings.defaults,
+            runShortcut: { events.append($0.rawValue) }, probe: { _, _ in events.append("ready") })
+        let model = LocationViewModel(settings: fixture.settings, controller: fixture.controller, networkAssist: assist)
+        model.setConnectionMode(.assisted)
+        let reopened = LocationViewModel(settings: fixture.settings, controller: fixture.controller, networkAssist: assist)
+        XCTAssertEqual(reopened.connectionMode, .assisted)
+        XCTAssertTrue(events.isEmpty, "Remembering the mode must not start shortcuts")
+        enterValidCoordinate(reopened)
+        await perform(reopened) { reopened.apply() }
+        XCTAssertEqual(events, ["disable", "ready", "enable"])
+        XCTAssertEqual(fixture.controller.setRequests.count, 1)
+        events.removeAll()
+        await perform(reopened) { reopened.restore() }
+        XCTAssertEqual(events, ["disable", "ready", "enable"])
+        XCTAssertEqual(fixture.controller.clearCalls, 1)
+        XCTAssertNotNil(reopened.restorationNotice)
+        XCTAssertNil(fixture.settings.operationID)
+    }
+
+    func testReturningToDirectModePersistsAndNeverRunsShortcuts() async throws {
+        let fixture = try setup()
+        let assist = LocationNetworkAssist(defaults: fixture.settings.defaults,
+            runShortcut: { _ in XCTFail("Direct mode must not toggle cellular data") },
+            probe: { _, _ in XCTFail("Direct mode must not use assisted readiness") })
+        let model = LocationViewModel(settings: fixture.settings, controller: fixture.controller, networkAssist: assist)
+        model.setConnectionMode(.assisted)
+        model.setConnectionMode(.direct)
+        let reopened = LocationViewModel(settings: fixture.settings, controller: fixture.controller, networkAssist: assist)
+        XCTAssertEqual(reopened.connectionMode, .direct)
+        enterValidCoordinate(reopened)
+        await perform(reopened) { reopened.apply() }
+        await perform(reopened) { reopened.restore() }
+        XCTAssertEqual(fixture.controller.setRequests.count, 1)
+        XCTAssertEqual(fixture.controller.clearCalls, 1)
+    }
+
+    func testMissingOrUnknownConnectionModeDefaultsToDirectWithoutStartingWork() throws {
+        let fixture = try setup()
+        XCTAssertEqual(fixture.model.connectionMode, .direct)
+        fixture.settings.defaults.set("future-mode", forKey: "location.connectionMode")
+        let reopened = LocationViewModel(settings: fixture.settings, controller: fixture.controller)
+        XCTAssertEqual(reopened.connectionMode, .direct)
+        XCTAssertTrue(fixture.controller.setRequests.isEmpty)
+        XCTAssertEqual(fixture.controller.clearCalls, 0)
+        XCTAssertNil(reopened.restorationNotice)
+    }
+
+    func testAssistedRestoreReadinessFailureDoesNotClearOrClaimRestoration() async throws {
+        let fixture = try setup()
+        var time: TimeInterval = 0
+        var actions: [LocationNetworkAssist.Action] = []
+        let assist = LocationNetworkAssist(defaults: fixture.settings.defaults,
+            runShortcut: { actions.append($0) }, probe: { _, _ in throw URLError(.cannotConnectToHost) },
+            pause: { time += 1 }, now: { time }, readinessTimeout: 2)
+        let model = LocationViewModel(settings: fixture.settings, controller: fixture.controller, networkAssist: assist)
+        model.setConnectionMode(.assisted)
+        await perform(model) { model.restore() }
+        XCTAssertEqual(actions, [.disable, .enable])
+        XCTAssertEqual(fixture.controller.clearCalls, 0)
+        XCTAssertNil(model.restorationNotice)
+        XCTAssertNotNil(model.error)
+        XCTAssertFalse(model.requiresCellularRestore)
+        XCTAssertNil(fixture.settings.operationID)
+    }
+
+    func testRestoreNoticeIsClearedByNewOperationAndFailedRestore() async throws {
+        let fixture = try setup()
+        await perform(fixture.model) { fixture.model.restore() }
+        XCTAssertNotNil(fixture.model.restorationNotice)
+        enterValidCoordinate(fixture.model)
+        await perform(fixture.model) { fixture.model.apply() }
+        XCTAssertNil(fixture.model.restorationNotice)
+        await perform(fixture.model) { fixture.model.restore() }
+        XCTAssertNotNil(fixture.model.restorationNotice)
+        fixture.controller.clearError = URLError(.networkConnectionLost)
+        await perform(fixture.model) { fixture.model.restore() }
+        XCTAssertNil(fixture.model.restorationNotice)
+        XCTAssertNotNil(fixture.model.error)
+    }
+
+    func testModeCannotChangeDuringDeviceOperationOrPendingCellularRecovery() throws {
+        let fixture = try setup()
+        let token = try XCTUnwrap(fixture.settings.beginOperation())
+        fixture.model.setConnectionMode(.assisted)
+        XCTAssertEqual(fixture.model.connectionMode, .direct)
+        fixture.settings.endOperation(token)
+        fixture.model.setConnectionMode(.assisted)
+        fixture.settings.defaults.set(true, forKey: "location.networkAssist.requiresRestore")
+        fixture.model.setConnectionMode(.direct)
+        XCTAssertEqual(fixture.model.connectionMode, .assisted)
+        let reopened = LocationViewModel(settings: fixture.settings, controller: fixture.controller)
+        XCTAssertEqual(reopened.connectionMode, .assisted)
+        XCTAssertTrue(reopened.requiresCellularRestore)
+    }
+
     func testAssistedApplyWaitsForNetworkAndUsesConvertedCoordinate() async throws {
         let fixture = try setup()
         var events: [String] = []
@@ -12,7 +110,8 @@ final class LocationViewModelTests: XCTestCase {
             runShortcut: { events.append($0.rawValue) }, probe: { _, _ in events.append("ready") })
         let model = LocationViewModel(settings: fixture.settings, controller: fixture.controller, networkAssist: assist)
         model.selectSearchCoordinate(.init(latitude: 31.839047, longitude: 118.815859), countryCode: "CN")
-        await perform(model) { model.applyWithoutWiFi() }
+        model.setConnectionMode(.assisted)
+        await perform(model) { model.apply() }
         XCTAssertEqual(events, ["disable", "ready", "enable"])
         XCTAssertEqual(try XCTUnwrap(fixture.controller.setRequests.first?.coordinate.latitude), 31.841097105, accuracy: 0.00000001)
         XCTAssertFalse(model.requiresCellularRestore)
@@ -25,7 +124,8 @@ final class LocationViewModelTests: XCTestCase {
             runShortcut: { _ in throw URLError(.timedOut) }, probe: { _, _ in XCTFail() })
         let model = LocationViewModel(settings: fixture.settings, controller: fixture.controller, networkAssist: assist)
         enterValidCoordinate(model)
-        await perform(model) { model.applyWithoutWiFi() }
+        model.setConnectionMode(.assisted)
+        await perform(model) { model.apply() }
         XCTAssertTrue(fixture.controller.setRequests.isEmpty)
         XCTAssertNil(fixture.settings.defaults.object(forKey: "location.latitude"))
         XCTAssertTrue(model.requiresCellularRestore)
