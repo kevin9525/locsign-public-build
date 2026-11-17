@@ -55,7 +55,7 @@ final class DeviceLocationController: DeviceLocationControlling {
     init(makeTransport: @escaping (String, TimeInterval) async throws -> any LocationLockdownTransport = {
         try await LockdownNetworkTransport(host: $0, connectTimeout: $1)
     }, openService: @escaping (String, LockdownServiceEndpoint, PairingRecord) async throws -> any DeviceServiceTransport = {
-        try await DeviceServiceConnection(host: $0, endpoint: $1, pairing: $2, timeout: 8)
+        try await DeviceServiceConnection(host: $0, endpoint: $1, pairing: $2)
     }) {
         self.makeTransport = makeTransport; self.openService = openService
     }
