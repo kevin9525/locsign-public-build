@@ -18,3 +18,9 @@ References inspected:
 - https://github.com/SideStore/SideStore/issues/1505
 
 The implementation is independent and does not copy SideStore source. No real pairing records, identifiers, certificates or raw device logs are included.
+
+## Verified delivery
+
+CI run [42977525463](https://github.com/kevin9525/locsign-public-build/actions/runs/42977525463), public source `74999d8df24f97a5961939882112d60bad558575`, completed successfully: 394 XCTest with zero failures, native-library checks, eight packaging tests, simulator/device builds and IPA assembly. The private implementation commit is `d2bd25c` and was pushed to the existing GitHub feature branch on 2026-11-17.
+
+The delivered unsigned IPA is 24,785,022 bytes, SHA-256 `017433d6f06816d3552956ddcf12ec16ec3d773fdebf8ecfd7c9b381666323e7`. On 2026-11-17 its version/build, original app identifier, arm64 Mach-O header, registered `locsign` URL scheme, embedded developer-image hashes and ZIP CRC were independently rechecked. Device behavior remains unverified. USB device entries are present, but the Windows Apple Mobile Device Service is stopped; the current process could not start it, so no new installed-version or location result was obtained.
