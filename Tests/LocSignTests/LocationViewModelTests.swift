@@ -328,6 +328,7 @@ private final class LocationControllerFixture: DeviceLocationControlling {
     private var setContinuation: CheckedContinuation<Void, Never>?
 
     init(delayedSet: Bool = false) { self.delayedSet = delayedSet }
+    func prepareConnection(host: String, timeout: TimeInterval) async throws {}
     func releaseSet() {
         setReleased = true
         setContinuation?.resume()

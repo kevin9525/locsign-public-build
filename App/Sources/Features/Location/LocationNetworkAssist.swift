@@ -1,7 +1,8 @@
 import Foundation
 
 /// An explicit workaround for device endpoints that reject connections on cellular.
-/// A Shortcut callback and a successful QueryType are separate required steps.
+/// The callback permits preparing the actual socket; the operation then owns
+/// QueryType and pairing authentication on that retained connection.
 @MainActor
 final class LocationNetworkAssist {
     enum Action: String { case disable, enable }
@@ -45,7 +46,7 @@ final class LocationNetworkAssist {
             update("正在等待本地设备服务就绪…")
             try await waitForEndpoint(host)
             try Task.checkCancellation()
-            update("设备服务可达，正在认证并执行定位…")
+            update("设备连接已建立，正在认证并执行定位…")
             try await operation()
         } catch {
             if let failure = error as? LocationShortcutRunner.Failure, case .completionUnknown = failure {
@@ -80,7 +81,7 @@ final class LocationNetworkAssist {
             catch { /* Network transitions can briefly refuse or time out. */ }
             try await pause()
         }
-        throw LocationControlError.message("关闭蜂窝数据后，设备服务仍未就绪。请确认 LocalDevVPN 保持连接；此系统暂未通过无 Wi-Fi 连接验证，可连接 Wi-Fi 后使用。")
+        throw LocationControlError.message("L01 设备控制端口 62078 未就绪：关闭蜂窝数据后仍无法建立定位连接。LocalDevVPN 显示已连接不代表设备端口可达；可先连接 Wi-Fi 使用。")
     }
 
     private func attemptRestore() async {

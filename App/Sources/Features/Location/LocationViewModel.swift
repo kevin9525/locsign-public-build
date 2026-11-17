@@ -36,7 +36,7 @@ final class LocationViewModel: ObservableObject {
         shortcutRunner = runner
         self.networkAssist = networkAssist ?? LocationNetworkAssist(defaults: settings.defaults,
             runShortcut: { try await runner.run($0) },
-            probe: { host, timeout in _ = try await DeviceConnectionProbe().check(host: host, timeout: timeout) })
+            probe: { host, timeout in try await controller.prepareConnection(host: host, timeout: timeout) })
         self.networkAssist.onChange = { [weak self] in self?.updateNetworkAssistState() }
         updateNetworkAssistState()
         inputSystem = settings.defaults.string(forKey: "location.coordinateSystem")
@@ -185,6 +185,7 @@ final class LocationViewModel: ObservableObject {
                     storeSelection(input)
                 }
             } catch {
+                await controller.disconnect()
                 status = "操作未完成，设备定位状态未确认"
                 self.error = error is CancellationError ? "操作已取消，可重新连接后恢复真实定位" : ProvisioningRedaction.redact(error.localizedDescription)
             }

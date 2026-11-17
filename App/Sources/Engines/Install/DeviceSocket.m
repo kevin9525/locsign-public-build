@@ -80,11 +80,18 @@ static OSStatus LSWriteCallback(SSLConnectionRef connection, const void *data, s
 
 - (nullable instancetype)initWithHost:(NSString *)host port:(uint16_t)port
                               timeout:(NSTimeInterval)timeout error:(NSError **)error {
+    return [self initWithHost:host port:port timeout:timeout connectTimeout:timeout error:error];
+}
+
+- (nullable instancetype)initWithHost:(NSString *)host port:(uint16_t)port
+                              timeout:(NSTimeInterval)timeout connectTimeout:(NSTimeInterval)connectTimeout
+                                error:(NSError **)error {
     self = [super init];
     if (!self) return nil;
     self.socketFD = -1;
     self.tlsContext = NULL;
-    if (!isfinite(timeout) || timeout <= 0 || timeout > 300) {
+    if (!isfinite(timeout) || timeout <= 0 || timeout > 300 ||
+        !isfinite(connectTimeout) || connectTimeout <= 0 || connectTimeout > 300) {
         if (error) *error = LSError(EINVAL, @"设备连接超时设置无效");
         return nil;
     }
@@ -103,7 +110,7 @@ static OSStatus LSWriteCallback(SSLConnectionRef connection, const void *data, s
         return nil;
     }
 
-    int timeoutMilliseconds = (int)(MAX(0.1, timeout) * 1000.0);
+    int timeoutMilliseconds = (int)(MAX(0.001, connectTimeout) * 1000.0);
     int lastError = ETIMEDOUT;
     for (struct addrinfo *address = addresses; address; address = address->ai_next) {
         int fd = socket(address->ai_family, address->ai_socktype, address->ai_protocol);

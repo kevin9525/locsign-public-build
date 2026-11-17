@@ -30,7 +30,7 @@ final class LocationNetworkAssistTests: XCTestCase {
         do {
             try await assist.run(host: "10.7.0.1") { XCTFail("Unreachable endpoint must not receive location") }
             XCTFail("Expected readiness timeout")
-        } catch { XCTAssertTrue(error.localizedDescription.contains("设备服务")) }
+        } catch { XCTAssertTrue(error.localizedDescription.contains("L01")) }
         XCTAssertEqual(actions, [.disable, .enable])
         XCTAssertFalse(assist.requiresRestore)
     }

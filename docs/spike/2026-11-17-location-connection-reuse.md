@@ -1,0 +1,11 @@
+# Reuse the assisted location connection
+
+The user confirmed a `连接设备服务失败（61）` error after selecting **无 Wi-Fi 应用定位** on installed 0.4.3 (22), with LocalDevVPN enabled. USB confirmed the version. The previous live-log output included ordinary system connection events but did not establish which LocSign socket failed. Do not treat these system events as proof of a specific VPN or TLS failure.
+
+The 0.4.3 path probes QueryType through Network.framework, closes that probe, then immediately opens a different POSIX socket for pairing. Its readiness result therefore does not cover the transport actually used by location. Raw socket failures from either the control port or heartbeat port also lack a location-stage prefix. This is a code-level gap, not a confirmed explanation of every cellular refusal.
+
+0.4.4 (23) reserves a POSIX control connection during assisted readiness and passes that exact connection into QueryType, StartSession and pairing TLS. It does not bypass authentication. A short TCP-connect deadline is separate from the normal eight-second per-I/O timeout, so the readiness polling timeout is not reused for TLS. Host changes, cancellation, explicit disconnect and failed authentication close any reserved connection. Literal IP addresses keep DNS blocking outside this readiness path.
+
+Errors distinguish L00 (pairing parse), L01 (control port 62078), L02 (pairing authentication), L03 (location certificate), L04 (device identity), L05 (start heartbeat), L06 (heartbeat port) and L07 (heartbeat response). Native developer-image/tunnel errors keep their existing operation labels. No raw credentials, coordinates or device identifiers are logged or published.
+
+Tests cover actual controller reuse through TLS, heartbeat-port failure classification, changed-host disposal, disconnect during pending preparation, and a loopback socket whose delayed response exceeds the short connection deadline but remains within its I/O deadline. macOS validation and final artifact evidence will be appended after execution. Cellular operation and continued positioning after data restoration still require a device result; the existence of this build is not a claim that LocalDevVPN's cellular routing has been fixed.

@@ -1,15 +1,20 @@
 import Foundation
 
-final class LockdownNetworkTransport: LockdownTransport {
+protocol LocationLockdownTransport: LockdownTransport {
+    func authenticatedPeerCertificate() async throws -> Data
+}
+
+final class LockdownNetworkTransport: LocationLockdownTransport {
     private let queue = DispatchQueue(label: "com.locsign.lockdown-transport")
     private let host: String
     private let socket: LSDeviceSocket
     private var isTLS = false
 
-    init(host: String, port: UInt16 = 62078, timeout: TimeInterval = 8) async throws {
+    init(host: String, port: UInt16 = 62078, timeout: TimeInterval = 8,
+         connectTimeout: TimeInterval? = nil) async throws {
         guard !host.isEmpty, port > 0 else { throw LocSignError.install("设备地址无效") }
         self.host = host
-        socket = try await Self.openSocket(host: host, port: port, timeout: timeout)
+        socket = try await Self.openSocket(host: host, port: port, timeout: timeout, connectTimeout: connectTimeout ?? timeout)
     }
 
     func send(_ request: [String: Any]) async throws {
@@ -74,10 +79,10 @@ final class LockdownNetworkTransport: LockdownTransport {
         }
     }
 
-    private static func openSocket(host: String, port: UInt16, timeout: TimeInterval) async throws -> LSDeviceSocket {
+    private static func openSocket(host: String, port: UInt16, timeout: TimeInterval, connectTimeout: TimeInterval) async throws -> LSDeviceSocket {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
-                do { continuation.resume(returning: try LSDeviceSocket(host: host, port: port, timeout: timeout)) }
+                do { continuation.resume(returning: try LSDeviceSocket(host: host, port: port, timeout: timeout, connectTimeout: connectTimeout)) }
                 catch { continuation.resume(throwing: error) }
             }
         }

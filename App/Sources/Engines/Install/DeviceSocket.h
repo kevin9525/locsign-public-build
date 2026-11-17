@@ -13,6 +13,13 @@ SecIdentityRef _Nullable LocSignCreateIdentity(SecCertificateRef certificate,
                                  port:(uint16_t)port
                               timeout:(NSTimeInterval)timeout
                                 error:(NSError * _Nullable * _Nullable)error;
+// Network readiness may use a short connect deadline while TLS and later I/O
+// retain their normal timeout on this same socket.
+- (nullable instancetype)initWithHost:(NSString *)host
+                                 port:(uint16_t)port
+                              timeout:(NSTimeInterval)timeout
+                       connectTimeout:(NSTimeInterval)connectTimeout
+                                error:(NSError * _Nullable * _Nullable)error;
 - (BOOL)sendRawData:(NSData *)data error:(NSError * _Nullable * _Nullable)error;
 - (nullable NSData *)readRawLength:(NSUInteger)length error:(NSError * _Nullable * _Nullable)error;
 - (BOOL)startTLSWithIdentity:(SecIdentityRef)identity

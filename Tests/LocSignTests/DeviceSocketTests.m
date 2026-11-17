@@ -284,5 +284,31 @@ static OSStatus LSTestWrite(SSLConnectionRef connection, const void *data, size_
     close(peer);
     close(listener);
 }
+
+- (void)testShortConnectDeadlineDoesNotShortenLaterIO {
+    uint16_t port = 0;
+    int listener = [self listenerWithPort:&port];
+    XCTAssertGreaterThanOrEqual(listener, 0);
+    if (listener < 0) return;
+    NSError *error = nil;
+    LSDeviceSocket *client = [[LSDeviceSocket alloc] initWithHost:@"127.0.0.1" port:port timeout:2 connectTimeout:0.05 error:&error];
+    XCTAssertNotNil(client);
+    if (!client) { close(listener); return; }
+    int peer = accept(listener, NULL, NULL);
+    XCTestExpectation *done = [self expectationWithDescription:@"Delayed response"];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC), dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
+        uint8_t value = 42;
+        send(peer, &value, 1, 0);
+        close(peer);
+        [done fulfill];
+    });
+    NSData *received = [client readRawLength:1 error:&error];
+    uint8_t expected = 42;
+    XCTAssertEqualObjects(received, [NSData dataWithBytes:&expected length:1]);
+    XCTAssertNil(error);
+    [client close];
+    close(listener);
+    [self waitForExpectations:@[done] timeout:3];
+}
 @end
 #pragma clang diagnostic pop
