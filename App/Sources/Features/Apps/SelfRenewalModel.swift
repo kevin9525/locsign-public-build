@@ -76,6 +76,7 @@ private final class SystemSelfRenewalNotifications: SelfRenewalNotificationCente
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
         var components = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: reminder.date)
+        components.calendar = calendar
         components.timeZone = calendar.timeZone
         let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
         try await center.add(.init(identifier: reminder.id, content: content, trigger: trigger))
@@ -132,7 +133,9 @@ final class SelfRenewalModel: ObservableObject {
             await previous?.value
             notifications.removePending(SelfRenewalReminder.identifiers)
             guard remindersEnabled, let profile else { return }
-            guard await notifications.isAuthorized() else {
+            let authorized = await notifications.isAuthorized()
+            guard remindersEnabled else { return }
+            guard authorized else {
                 notificationError = "通知权限已关闭，请在 iOS 设置中开启 LocSign 通知。"
                 return
             }
@@ -140,8 +143,10 @@ final class SelfRenewalModel: ObservableObject {
                 for reminder in SelfRenewalReminder.plan(expiry: profile.profileExpiry, now: now()) {
                     try await notifications.add(reminder)
                 }
-                notificationError = nil
-            } catch { notificationError = "未能安排到期提醒，请重试或设置日历提醒。" }
+                if remindersEnabled { notificationError = nil }
+            } catch {
+                if remindersEnabled { notificationError = "未能安排到期提醒，请重试或设置日历提醒。" }
+            }
         }
         notificationUpdate = update
         await update.value

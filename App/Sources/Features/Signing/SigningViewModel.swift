@@ -255,7 +255,7 @@ final class SigningViewModel: ObservableObject {
                 guard material.profileExpiry > minimumExpiry,
                       material.certificateExpiry > Date().addingTimeInterval(AppRenewalPolicy.renewalWindow),
                       material.signingBundleID == selfRenewalProfile?.bundleID else {
-                    throw LocSignError.install("自身续签未获得有效期更长的匹配材料，请稍后重试；当前安装保持不变。")
+                    throw LocSignError.install("自身续签未获得有效期更长的匹配材料，请稍后重试；尚未执行覆盖安装。")
                 }
             }
             stage = "正在签名 IPA…"

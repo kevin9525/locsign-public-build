@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 @testable import LocSign
 
 final class InstalledSelfProfileTests: XCTestCase {
@@ -107,19 +108,27 @@ final class SelfRenewalModelTests: XCTestCase {
     }
 
     func testDisablingWhileAddIsInFlightLeavesNoLateReminders() async {
-        let notifications = SelfReminderCenterFixture()
-        notifications.delayAdd = true
-        let model = makeModel(notifications)
-        await model.refresh()
-        let enable = Task { await model.setRemindersEnabled(true) }
-        await fulfillment(of: [notifications.entered], timeout: 3)
-        let disable = Task { await model.setRemindersEnabled(false) }
-        await Task.yield()
-        notifications.release()
-        await enable.value
-        await disable.value
-        XCTAssertTrue(notifications.pending.isEmpty)
-        XCTAssertFalse(model.remindersEnabled)
+        for failAfterRelease in [false, true] {
+            let notifications = SelfReminderCenterFixture()
+            notifications.delayAdd = true
+            let model = makeModel(notifications)
+            await model.refresh()
+            let enable = Task { await model.setRemindersEnabled(true) }
+            await fulfillment(of: [notifications.entered], timeout: 3)
+            let disabled = expectation(description: "Reminders switched off")
+            let observation = model.$remindersEnabled.filter { !$0 }.sink { _ in disabled.fulfill() }
+            let disable = Task { await model.setRemindersEnabled(false) }
+            await fulfillment(of: [disabled], timeout: 3)
+            observation.cancel()
+            XCTAssertFalse(model.remindersEnabled)
+            notifications.failAdd = failAfterRelease
+            notifications.release()
+            await enable.value
+            await disable.value
+            XCTAssertTrue(notifications.pending.isEmpty)
+            XCTAssertFalse(model.remindersEnabled)
+            XCTAssertNil(model.notificationError)
+        }
     }
 
     private func makeModel(_ center: SelfReminderCenterFixture) -> SelfRenewalModel {
@@ -151,11 +160,11 @@ private final class SelfReminderCenterFixture: SelfRenewalNotificationCenter {
         for id in identifiers { pending[id] = nil }
     }
     func add(_ reminder: SelfRenewalReminder) async throws {
-        if failAdd { throw URLError(.unknown) }
         if delayAdd {
             delayAdd = false
             await withCheckedContinuation { continuation = $0; entered.fulfill() }
         }
+        if failAdd { throw URLError(.unknown) }
         pending[reminder.id] = reminder
     }
     func release() { continuation?.resume(); continuation = nil }
