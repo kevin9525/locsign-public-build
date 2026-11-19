@@ -17,3 +17,7 @@ GitHub Actions run [44008772161](https://github.com/kevin9525/locsign-public-bui
 Artifact `14296733725` contains `LocSign-0.4.4-build23-unsigned.ipa` (24,789,921 bytes), SHA-256 `2470dee8810d9a9e53097047711af90b6c1e29d5bc498386865cdb48ca60efec`. Local verification checked ZIP CRC, version/build, bundle identity, arm64 executable, unsigned packaging, callback scheme, background processing mode, certificate/license resources and all three developer-image resource hashes. The IPA, verification JSON and Chinese instructions were placed in the user's designated deliverables directory.
 
 The last USB version check still showed 0.4.3 (22). Version 0.4.4 (23) has not yet been signed, installed or verified on that phone. The existing two cellular-data shortcuts can be reused for the device test.
+
+## Subsequent device feedback
+
+After delivery on 2026-11-17, the user reported that the no-Wi-Fi operation succeeded. They then reported that JD/Baidu still displayed the previous address after restoring. When explicitly asked to use the location arrow in Apple's Maps, they confirmed that its blue dot had returned to the real location. This accepts the observed apply/restore outcome; the installed version was not read again over USB in this exchange. Other Apps' refresh timing and manually selected delivery addresses are independent of the restore command, and continuous operation after backgrounding is still not established.
