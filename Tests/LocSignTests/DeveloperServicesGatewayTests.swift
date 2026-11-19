@@ -540,6 +540,108 @@ final class DeveloperServicesGatewayTests: XCTestCase {
         XCTAssertNil(absent)
     }
 
+    func testIncompleteRESTCapabilitiesAreVerifiedUsingExactLegacyAppID() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setCapabilityResponse(["data": [["id": "cap", "type": "bundleIdCapabilities"]]])
+        try await transport.setLegacyApps([
+            ["appIdId": "prefix", "identifier": "com.test.app.extra", "enabledFeatures": ["APP_GROUPS"]],
+            ["appIdId": "bundle", "identifier": "com.test.app", "enabledFeatures": ["inAppPurchase"]]
+        ])
+        let bundle = try await gateway(transport).findExactBundleID("com.test.app")
+        XCTAssertEqual(bundle, .init(id: "bundle", identifier: "com.test.app", capabilities: ["IN_APP_PURCHASE"]))
+        let requests = await transport.requests
+        let fallback = try XCTUnwrap(requests.first { $0.path.contains("ios/listAppIds.action") })
+        XCTAssertEqual(fallback.host, "developerservices2.apple.com")
+        XCTAssertEqual(fallback.team, "TEAM12345")
+        XCTAssertEqual(fallback.token, "synthetic-token")
+        XCTAssertEqual(requests.count, 3)
+        XCTAssertFalse(requests.contains { $0.override == "DELETE" })
+    }
+
+    func testUnparseableCapabilityEnvelopeCanRecoverOnlyFromExplicitLegacyFeatures() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setCapabilityResponse(["unexpected": "synthetic-sensitive-response"])
+        try await transport.setLegacyApps([["appIdId": "bundle", "identifier": "com.test.app", "enabledFeatures": []]])
+        let bundle = try await gateway(transport).findExactBundleID("com.test.app")
+        XCTAssertEqual(bundle?.capabilities, [])
+    }
+
+    func testCreatedBundleAlsoVerifiesCapabilitiesThroughLegacyFallback() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setCapabilityResponse(["data": [["id": "cap", "type": "bundleIdCapabilities", "attributes": [:]]]])
+        try await transport.setLegacyApps([["appIdId": "bundle", "identifier": "com.test.app", "enabledFeatures": []]])
+        let bundle = try await gateway(transport).createBundleID("com.test.app", name: "Test")
+        XCTAssertEqual(bundle, .init(id: "bundle", identifier: "com.test.app", capabilities: []))
+    }
+
+    func testValidAndUnknownRESTCapabilitiesNeverFallBackOrDisappear() async throws {
+        for name in ["IN_APP_PURCHASE", "APP_GROUPS", "FUTURE_CAPABILITY"] {
+            let transport = DeveloperAPIFixture()
+            await transport.setCapabilityResponse(["data": [["id": "cap", "type": "bundleIdCapabilities", "attributes": ["capabilityType": name]]]])
+            let bundle = try await gateway(transport).findExactBundleID("com.test.app")
+            XCTAssertEqual(bundle?.capabilities, [name])
+            let requests = await transport.requests
+            XCTAssertFalse(requests.contains { $0.path.contains("listAppIds") })
+        }
+    }
+
+    func testLegacyFallbackPreservesUnsupportedFeaturesForProvisionerRejection() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setCapabilityResponse(["data": [["id": "cap", "type": "bundleIdCapabilities"]]])
+        try await transport.setLegacyApps([["appIdId": "bundle", "identifier": "com.test.app", "enabledFeatures": ["FUTURE_FEATURE", "inAppPurchase"]]])
+        let bundle = try await gateway(transport).findExactBundleID("com.test.app")
+        let capabilities = try XCTUnwrap(bundle?.capabilities)
+        XCTAssertTrue(capabilities.contains("IN_APP_PURCHASE"))
+        XCTAssertEqual(capabilities.count, 2)
+        XCTAssertFalse(Set(capabilities).isSubset(of: ["IN_APP_PURCHASE"]))
+    }
+
+    func testLegacyFallbackRejectsMissingAmbiguousOrChangedIdentityAndMissingFeatures() async throws {
+        let good: [String: Any] = ["appIdId": "bundle", "identifier": "com.test.app", "enabledFeatures": []]
+        let cases: [[[String: Any]]] = [
+            [], [good, good],
+            [["appIdId": "changed", "identifier": "com.test.app", "enabledFeatures": []]],
+            [["appIdId": "bundle", "identifier": "com.test.app.extra", "enabledFeatures": []]],
+            [["appIdId": "bundle", "identifier": "com.test.app"]],
+            [["appIdId": "bundle", "identifier": "com.test.app", "enabledFeatures": "synthetic-sensitive-response"]]
+        ]
+        for apps in cases {
+            let transport = DeveloperAPIFixture()
+            await transport.setCapabilityResponse(["data": [["id": "cap", "type": "bundleIdCapabilities"]]])
+            try await transport.setLegacyApps(apps)
+            do { _ = try await gateway(transport).findExactBundleID("com.test.app"); XCTFail("Unverified capabilities accepted") }
+            catch {
+                XCTAssertEqual((error as? DeveloperServicesFailure)?.step, .readCapabilities)
+                XCTAssertFalse(error.localizedDescription.contains("synthetic-sensitive-response"))
+            }
+            let requests = await transport.requests
+            XCTAssertEqual(requests.filter { $0.path.contains("listAppIds") }.count, 1)
+            XCTAssertEqual(requests.count, 3)
+        }
+    }
+
+    func testCapabilityHTTPRejectionNeverFallsBack() async throws {
+        for status in [401, 403, 409, 500] {
+            let transport = DeveloperAPIFixture()
+            await transport.setCapabilityResponse(["errors": [["detail": "synthetic-sensitive-response"]]], status: status)
+            do { _ = try await gateway(transport).findExactBundleID("com.test.app"); XCTFail("Rejection accepted") }
+            catch { XCTAssertEqual(error as? DeveloperServicesFailure, .init(step: .readCapabilities, reason: .rejected(status))) }
+            let requests = await transport.requests
+            XCTAssertFalse(requests.contains { $0.path.contains("listAppIds") })
+        }
+    }
+
+    func testLegacyFallbackSurfacesAppleRejectionWithoutRawResponseOrQuotaFlow() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setCapabilityResponse(["data": [["id": "cap", "type": "bundleIdCapabilities"]]])
+        try await transport.setLegacyApps([], resultCode: 7460)
+        do { _ = try await gateway(transport).findExactBundleID("com.test.app"); XCTFail("Apple rejection accepted") }
+        catch {
+            XCTAssertEqual(error as? DeveloperServicesFailure, .init(step: .readCapabilities, reason: .appleRejected(7460)))
+            XCTAssertFalse(error.localizedDescription.contains("synthetic-sensitive-response"))
+        }
+    }
+
     func testProfilesAndCertificatesPreserveContentAndCreateOnlyRequestedAssociations() async throws {
         let transport = DeveloperAPIFixture()
         let gateway = try gateway(transport)
@@ -606,6 +708,19 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
     private var cancellation = false
     private var profileConflicts: [[String: Any]] = []
     private var cancelOnProfileConflict = false
+    private var capabilityPayload: Data?
+    private var capabilityStatus = 200
+    private var legacyAppsPayload: Data?
+    func setCapabilityResponse(_ payload: [String: Any], status: Int = 200) {
+        var complete = payload
+        complete["links"] = ["self": "https://developerservices2.apple.com/services/v1/bundleIds/bundle/bundleIdCapabilities"]
+        capabilityPayload = try! JSONSerialization.data(withJSONObject: complete)
+        capabilityStatus = status
+    }
+    func setLegacyApps(_ apps: [[String: Any]], resultCode: Int = 0) throws {
+        legacyAppsPayload = try PropertyListSerialization.data(fromPropertyList: ["appIds": apps,
+            "resultCode": resultCode, "resultString": "synthetic-sensitive-response"], format: .xml, options: 0)
+    }
     func setCancelOnProfileConflict() { cancelOnProfileConflict = true }
     func setProfileConflicts(_ values: [[String: Any]]) { profileConflicts = values }
     func setMalformedResponse() { malformedResponse = true }
@@ -649,6 +764,12 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
         let method = request.headerFields[.init("X-HTTP-Method-Override")!] ?? request.method.rawValue
         let path = request.path ?? ""
         requests.append(.init(host: baseURL.host, path: path, token: request.headerFields[.init("X-Apple-GS-Token")!], team: team, body: String(data: bytes, encoding: .utf8), override: method))
+        if path == "/v1/bundleIds/bundle/bundleIdCapabilities", let capabilityPayload {
+            return (.init(status: .init(code: capabilityStatus), headerFields: [.contentType: "application/json"]), HTTPBody(capabilityPayload))
+        }
+        if path.contains("ios/listAppIds.action"), let legacyAppsPayload {
+            return (.init(status: .ok), HTTPBody(legacyAppsPayload))
+        }
         if path == "/v1/profiles", method == "POST", !profileConflicts.isEmpty {
             let error = profileConflicts.removeFirst()
             if cancelOnProfileConflict { withUnsafeCurrentTask { $0?.cancel() } }
