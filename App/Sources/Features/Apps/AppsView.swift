@@ -5,6 +5,7 @@ struct AppsView: View {
     @ObservedObject var renewal: AppRenewalCoordinator
     @ObservedObject var settings: InstallationSettings
     @ObservedObject var account: AppleIDProvisioningModel
+    @ObservedObject var ownRenewal: SelfRenewalModel
     let background: RenewalBackgroundService
     @State private var deviceApps: InstalledAppList?
     @State private var loading = false
@@ -18,6 +19,8 @@ struct AppsView: View {
     var body: some View {
         NavigationStack {
             List {
+                SelfRenewalSection(model: ownRenewal, library: library, settings: settings, account: account,
+                    busy: busy, renew: { selfRenewal = $0 })
                 Section {
                     Toggle("自动续签", isOn: $renewal.enabled)
                         .onChange(of: renewal.enabled) { _, _ in
@@ -99,7 +102,7 @@ struct AppsView: View {
                 }
             }
             .navigationTitle("App 管理")
-            .task { await background.requestNotificationsIfNeeded() }
+            .task { await ownRenewal.refresh(); await background.requestNotificationsIfNeeded() }
             .onChange(of: settings.host) { _, _ in deviceApps = nil }
             .onChange(of: settings.pairing) { _, _ in deviceApps = nil }
             .alert("清除本地记录与原 IPA？", isPresented: Binding(get: { removal != nil }, set: { if !$0 { removal = nil } })) {
@@ -120,7 +123,11 @@ struct AppsView: View {
 
     private func renew(_ app: ManagedApp) {
         guard !busy else { return }
-        operation = Task { _ = await renewal.renew(id: app.id); background.schedule(); operation = nil }
+        let minimum = app.identity.signingBundleID == ownRenewal.profile?.bundleID ? ownRenewal.profile?.profileExpiry : nil
+        operation = Task {
+            _ = await renewal.renew(id: app.id, minimumProfileExpiry: minimum)
+            background.schedule(); operation = nil
+        }
     }
     private func browse() {
         guard !busy, let pairing = settings.pairing?.data, let token = settings.beginOperation() else { return }

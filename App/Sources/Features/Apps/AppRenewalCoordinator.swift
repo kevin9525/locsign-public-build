@@ -40,10 +40,12 @@ final class AppRenewalCoordinator: ObservableObject {
             .sorted { ($0.effectiveExpiry ?? .distantFuture) < ($1.effectiveExpiry ?? .distantFuture) }.map(\.id)
         return await run(ids: ids, automatic: true)
     }
-    func renew(id: UUID) async -> Bool { await run(ids: [id], automatic: false) }
+    func renew(id: UUID, minimumProfileExpiry: Date? = nil) async -> Bool {
+        await run(ids: [id], automatic: false, minimumProfileExpiry: minimumProfileExpiry)
+    }
     func cancel() { operation?.cancel() }
 
-    private func run(ids: [UUID], automatic: Bool) async -> Bool {
+    private func run(ids: [UUID], automatic: Bool, minimumProfileExpiry: Date? = nil) async -> Bool {
         guard !isRunning, settings.operationID == nil, !account.isBusy else { return false }
         guard !ids.isEmpty else { return true }
         guard let token = settings.beginOperation() else { return false }
@@ -56,7 +58,7 @@ final class AppRenewalCoordinator: ObservableObject {
                 if automatic && (!enabled || !AppRenewalPolicy.due(app, now: now(), runningBundleID: runningBundleID)) { continue }
                 do {
                     try library.recordAttempt(id: id, now: now())
-                    try await renewApp(app)
+                    try await renewApp(app, minimumProfileExpiry: minimumProfileExpiry)
                     stage = app.identity.signingBundleID == runningBundleID ? "等待重新打开 LocSign 核对自身续签" : "\(app.name) 续签完成"
                 } catch {
                     succeeded = false
@@ -77,7 +79,7 @@ final class AppRenewalCoordinator: ObservableObject {
         return result
     }
 
-    private func renewApp(_ app: ManagedApp) async throws {
+    private func renewApp(_ app: ManagedApp, minimumProfileExpiry: Date?) async throws {
         try Task.checkCancellation()
         stage = "\(app.name)：检查账号与原 IPA…"; progress = 0
         let source = try library.sourceURL(for: app.id)
@@ -98,7 +100,7 @@ final class AppRenewalCoordinator: ObservableObject {
         let device = try await probe.deviceUDID(host: settings.host, pairingData: pairing)
         try Task.checkCancellation()
         guard device == app.identity.deviceUDID else { throw LocSignError.install("连接的设备与此应用记录不一致，已停止续签") }
-        let minimum = AppRenewalPolicy.minimumExpiry(app, now: now())
+        let minimum = max(AppRenewalPolicy.minimumExpiry(app, now: now()), minimumProfileExpiry ?? .distantPast)
         let request = ProvisioningRequest(accountID: identity.id, teamID: app.identity.teamID, ipaURL: source,
             deviceUDID: device, signingBundleID: app.identity.signingBundleID, minimumProfileExpiry: minimum)
         stage = "\(app.name)：获取新的有效期…"

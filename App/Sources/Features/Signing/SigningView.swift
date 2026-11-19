@@ -11,6 +11,8 @@ struct SigningView: View {
     @State private var operation: Task<Void, Never>?
     @State private var continueAfterSetup = false
     @State private var setupForInstallation = false
+    @State private var confirmingSelfInstall = false
+    @Environment(\.dismiss) private var dismiss
 
     init(settings: InstallationSettings, model: SigningViewModel, account: AppleIDProvisioningModel) {
         self.settings = settings
@@ -26,11 +28,18 @@ struct SigningView: View {
                 Section {
                     importButton("选择 IPA", value: model.ipaName, kind: .ipa)
                         .disabled(busy)
-                    Button(action: startInstallation) {
-                        Label("一键安装", systemImage: "arrow.down.app.fill").font(.headline)
+                    Button {
+                        if model.selfRenewalProfile != nil { confirmingSelfInstall = true }
+                        else { startInstallation() }
+                    } label: {
+                        Label(model.selfRenewalProfile == nil ? "一键安装" : "续签并更新 LocSign", systemImage: "arrow.down.app.fill").font(.headline)
                     }.disabled(busy || model.ipaName == "未选择")
                 } footer: {
-                    Text("自动检查设备、复用或获取材料、签名并安装。请保持手机解锁、LocalDevVPN 开启。")
+                    if let profile = model.selfRenewalProfile {
+                        Text("选择 LocSign IPA，将使用当前标识 \(profile.bundleID) 和原团队更新自身。安装期间 App 会退出，重新打开后核对新的到期时间。请保持手机解锁、LocalDevVPN 开启。")
+                    } else {
+                        Text("自动检查设备、复用或获取材料、签名并安装。请保持手机解锁、LocalDevVPN 开启。")
+                    }
                 }
                 if model.isImporting || model.isPreparingIdentifier {
                     Section { HStack { ProgressView(); Text(model.isImporting ? "正在导入 IPA…" : "正在读取应用设置…") } }
@@ -71,7 +80,7 @@ struct SigningView: View {
                 if let output = model.outputURL {
                     Section("签名文件") {
                         if model.installSucceeded {
-                            Label("安装完成，可回到主屏幕打开应用", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                            Label(model.selfRenewalProfile == nil ? "安装完成，可回到主屏幕打开应用" : "请重新打开 LocSign 核对自身续签结果", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                         } else {
                             Label("已生成签名 IPA", systemImage: "signature")
                         }
@@ -89,7 +98,7 @@ struct SigningView: View {
                 if let error = model.error ?? account.error {
                     Section { Text(error).foregroundStyle(.red).textSelection(.enabled) }
                 }
-                Section {
+                if model.selfRenewalProfile == nil { Section {
                     DisclosureGroup("高级选项：手动签名") {
                         importButton("签名证书 / 私钥", value: model.identityName, kind: .identity)
                         importButton("描述文件", value: model.profile?.name ?? "未选择", kind: .profile)
@@ -103,9 +112,19 @@ struct SigningView: View {
                         }
                         Button("使用导入材料签名") { Task { await model.sign() } }.disabled(!model.canSign)
                     }.disabled(busy)
+                } }
+            }
+            .navigationTitle(model.selfRenewalProfile == nil ? "安装" : "LocSign 自身续签")
+            .toolbar {
+                if model.selfRenewalProfile != nil {
+                    ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() }.disabled(busy) }
                 }
             }
-            .navigationTitle("安装")
+            .interactiveDismissDisabled(busy)
+            .alert("续签并更新当前 LocSign？", isPresented: $confirmingSelfInstall) {
+                Button("取消", role: .cancel) {}
+                Button("继续", action: startInstallation)
+            } message: { Text("将保存原 IPA，并使用当前应用标识覆盖安装。安装会使 LocSign 退出，请重新打开后检查到期时间。") }
             .onChange(of: account.teamID) { _, team in
                 Task { await model.restoreSigningIdentifier(teamID: team) }
             }

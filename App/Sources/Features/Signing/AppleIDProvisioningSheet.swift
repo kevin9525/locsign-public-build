@@ -42,6 +42,11 @@ struct AppleIDProvisioningSheet: View {
                     }
                     Section("设备与签名") {
                         LabeledContent("IPA", value: signing.ipaName)
+                        if let profile = signing.selfRenewalProfile {
+                            LabeledContent("自身签名标识", value: profile.bundleID)
+                            Text("自身续签沿用当前应用标识和团队，安装期间 LocSign 会退出。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        } else {
                         Toggle("使用个人签名标识", isOn: $signing.usesPersonalBundleID).disabled(busy)
                         if signing.usesPersonalBundleID {
                             TextField("个人签名标识", text: $signing.personalBundleID)
@@ -51,6 +56,7 @@ struct AppleIDProvisioningSheet: View {
                             }.disabled(busy || account.teamID.isEmpty || signing.ipaName == "未选择")
                             Text("新标识会作为独立应用安装，不继承原应用数据。后续更新请保持此标识一致；原 IPA 不会被修改。")
                                 .font(.footnote).foregroundStyle(.secondary)
+                        }
                         }
                         LabeledContent("配对文件", value: signing.pairingName)
                         TextField("本地 VPN 设备 IP", text: $signing.deviceHost)

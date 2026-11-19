@@ -45,6 +45,7 @@ final class SigningViewModel: ObservableObject {
         }
     }
     @Published var error: String?
+    let selfRenewalProfile: InstalledSelfProfile?
     private let library: ManagedAppLibrary?
     private var managedIdentity: ManagedApp.Identity?
     private var managedMaterial: ProvisioningMaterial?
@@ -65,10 +66,13 @@ final class SigningViewModel: ObservableObject {
     private var outputIsProvisioned = false
     private var identifierTask: Task<String, Error>?
 
-    init(settings: InstallationSettings? = nil, library: ManagedAppLibrary? = nil, installer: any IPAInstalling = InstallCoordinator(), deviceProbe: any PairedDeviceProbing = ProvisioningDeviceProbe(),
+    init(settings: InstallationSettings? = nil, library: ManagedAppLibrary? = nil,
+         selfRenewalProfile: InstalledSelfProfile? = nil,
+         installer: any IPAInstalling = InstallCoordinator(), deviceProbe: any PairedDeviceProbing = ProvisioningDeviceProbe(),
          inspectBundleID: @escaping @Sendable (URL) throws -> String = { try ProvisioningIPAPreflight().inspect($0).bundleID },
          materialSigner: (@MainActor (URL, ProvisioningMaterial) async throws -> URL)? = nil) {
         self.library = library
+        self.selfRenewalProfile = selfRenewalProfile
         self.settings = settings
         self.inspectBundleID = inspectBundleID
         self.installer = installer
@@ -167,6 +171,11 @@ final class SigningViewModel: ObservableObject {
         guard !teamID.isEmpty, account.teams.contains(where: { $0.id == teamID }) else {
             error = "请选择可用的免费 iOS 团队"; needsAccountSetup = true; return
         }
+        if let selfRenewalProfile, teamID != selfRenewalProfile.teamID {
+            error = "自身续签必须使用当前安装的原 Apple ID 与团队，请在签名设置中选择原团队。"
+            needsAccountSetup = true
+            return
+        }
         guard let ipaURL, let pairingData else { error = "请先选择 IPA，并在首次设置中保存这台手机的配对文件"; return }
         let host = deviceHost.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty else { error = "请输入手机本地 VPN 的设备地址"; return }
@@ -188,7 +197,7 @@ final class SigningViewModel: ObservableObject {
         do {
             stage = "正在检查 IPA…"
             var originalBundle: String?
-            if mode == .install || settings != nil {
+            if mode == .install || settings != nil || selfRenewalProfile != nil {
                 let inspect = inspectBundleID
                 let task = Task.detached(priority: .userInitiated) { try inspect(ipaURL) }
                 identifierTask = task
@@ -196,6 +205,10 @@ final class SigningViewModel: ObservableObject {
                 identifierTask = nil
                 try check(operation)
                 originalBundle = original
+                if let selfRenewalProfile,
+                   original != "com.locsign.LocSign", original != selfRenewalProfile.bundleID {
+                    throw LocSignError.install("请选择 LocSign 的原 IPA；其他应用不能用于自身续签。")
+                }
                 if identifierTeam != teamID {
                     // An explicit edit made before the first operation wins; later
                     // team changes restore only that team's saved selection.
@@ -206,7 +219,8 @@ final class SigningViewModel: ObservableObject {
                     operation = generation
                 }
             }
-            let target = usesPersonalBundleID ? try ProvisioningSigningIdentifier.validate(personalBundleID) : nil
+            let target = try selfRenewalProfile?.bundleID
+                ?? (usesPersonalBundleID ? ProvisioningSigningIdentifier.validate(personalBundleID) : nil)
             stage = "正在连接并验证配对设备…"
             let previousDevice = verifiedDeviceUDID
             let currentDevice = try await deviceProbe.deviceUDID(host: host, pairingData: pairingData)
@@ -217,8 +231,14 @@ final class SigningViewModel: ObservableObject {
                 throw ProvisioningError.materialInvalid("配对设备已变化，请确认设备后重试")
             }
             verifiedDeviceUDID = currentDevice
+            if let selfRenewalProfile, !selfRenewalProfile.deviceUDIDs.contains(currentDevice) {
+                throw LocSignError.install("配对设备不在当前 LocSign 描述文件中，已停止自身续签。")
+            }
+            let minimumExpiry = selfRenewalProfile.map {
+                max($0.profileExpiry, Date().addingTimeInterval(AppRenewalPolicy.renewalWindow))
+            }
             let request = ProvisioningRequest(accountID: account.id, teamID: teamID, ipaURL: ipaURL,
-                deviceUDID: currentDevice, signingBundleID: target)
+                deviceUDID: currentDevice, signingBundleID: target, minimumProfileExpiry: minimumExpiry)
             stage = "正在检查本机签名材料…"
             let cached = mode == .fresh ? nil : try await engine.cachedMaterial(request: request)
             try check(operation)
@@ -231,6 +251,13 @@ final class SigningViewModel: ObservableObject {
                 material = try await engine.provision(request: request, confirmRevocation: confirmRevocation)
             }
             try check(operation)
+            if let minimumExpiry {
+                guard material.profileExpiry > minimumExpiry,
+                      material.certificateExpiry > Date().addingTimeInterval(AppRenewalPolicy.renewalWindow),
+                      material.signingBundleID == selfRenewalProfile?.bundleID else {
+                    throw LocSignError.install("自身续签未获得有效期更长的匹配材料，请稍后重试；当前安装保持不变。")
+                }
+            }
             stage = "正在签名 IPA…"
             let output = try await materialSigner(ipaURL, material)
             do { try check(operation) }
@@ -245,7 +272,7 @@ final class SigningViewModel: ObservableObject {
                     deviceUDID: currentDevice, originalBundleID: originalBundle, signingBundleID: target ?? originalBundle)
                 managedMaterial = material
             }
-            if let originalBundle {
+            if let originalBundle, selfRenewalProfile == nil {
                 try settings?.saveSigningChoice(.init(personal: usesPersonalBundleID, identifier: target ?? ""),
                     bundleID: originalBundle, teamID: teamID)
             }
@@ -254,7 +281,7 @@ final class SigningViewModel: ObservableObject {
                 isInstalling = true
                 stage = "正在上传并安装…"
                 try await upload(output, host: host, pairing: pairingData, operation: operation)
-                stage = "安装完成"
+                stage = selfRenewalProfile == nil ? "安装完成" : "等待重新打开 LocSign 核对自身续签"
             } else { stage = "签名完成" }
         } catch {
             if generation == operation {

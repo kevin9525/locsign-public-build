@@ -3,6 +3,63 @@ import XCTest
 
 final class SigningProvisioningViewModelTests: XCTestCase {
     @MainActor
+    func testSelfRenewalUsesCurrentIdentityAndRequestsStrictlyLaterExpiry() async throws {
+        let current = InstalledSelfProfile(bundleID: "com.personal.locsign", teamID: "TEAM12345",
+            profileExpiry: Date().addingTimeInterval(86400), deviceUDIDs: ["SYNTHETIC-UDID"])
+        let fixture = try await setup(selfProfile: current, originalBundle: "com.locsign.LocSign")
+        fixture.model.usesPersonalBundleID = true
+        fixture.model.personalBundleID = "com.unrelated.choice"
+        await fixture.engine.overrideMaterial(.init(privateKeyPEM: "synthetic-private-key", profileData: Data(),
+            certificateExpiry: .distantFuture, profileExpiry: .distantFuture, signingBundleID: current.bundleID))
+        await fixture.model.installIPA(using: fixture.engine, account: account, teamID: current.teamID, canProvision: true)
+        let cachedRequest = await fixture.engine.lastCachedRequest()
+        let request = try XCTUnwrap(cachedRequest)
+        XCTAssertEqual(request.signingBundleID, current.bundleID)
+        XCTAssertGreaterThan(try XCTUnwrap(request.minimumProfileExpiry), current.profileExpiry)
+        XCTAssertTrue(fixture.model.installSucceeded)
+        XCTAssertNil(fixture.model.error)
+    }
+
+    @MainActor
+    func testSelfRenewalRejectsWrongTeamIPAOrDeviceBeforeProvisioning() async throws {
+        for (team, original, devices) in [("OTHERTEAM", "com.locsign.LocSign", ["SYNTHETIC-UDID"]),
+                                         ("TEAM12345", "com.other.app", ["SYNTHETIC-UDID"]),
+                                         ("TEAM12345", "com.locsign.LocSign", ["OTHER-DEVICE"])] {
+            let current = InstalledSelfProfile(bundleID: "com.personal.locsign", teamID: team,
+                profileExpiry: Date().addingTimeInterval(86400), deviceUDIDs: devices)
+            let fixture = try await setup(selfProfile: current, originalBundle: original)
+            await fixture.model.installIPA(using: fixture.engine, account: account, teamID: "TEAM12345", canProvision: true)
+            let requests = await fixture.engine.requests
+            let cached = await fixture.engine.lastCachedRequest()
+            let installs = await fixture.installer.calls
+            XCTAssertTrue(requests.isEmpty)
+            XCTAssertNil(cached)
+            XCTAssertEqual(installs, 0)
+            XCTAssertNotNil(fixture.model.error)
+        }
+    }
+
+    @MainActor
+    func testSelfRenewalRejectsUnextendedOrWrongIdentifierMaterialBeforeSigning() async throws {
+        let current = InstalledSelfProfile(bundleID: "com.personal.locsign", teamID: "TEAM12345",
+            profileExpiry: Date().addingTimeInterval(86400), deviceUDIDs: ["SYNTHETIC-UDID"])
+        for material in [
+            ProvisioningMaterial(privateKeyPEM: "synthetic-private-key", profileData: Data(),
+                certificateExpiry: .distantFuture, profileExpiry: current.profileExpiry, signingBundleID: current.bundleID),
+            ProvisioningMaterial(privateKeyPEM: "synthetic-private-key", profileData: Data(),
+                certificateExpiry: .distantFuture, profileExpiry: .distantFuture, signingBundleID: "com.wrong.app")
+        ] {
+            let fixture = try await setup(selfProfile: current, originalBundle: "com.locsign.LocSign")
+            await fixture.engine.overrideMaterial(material)
+            await fixture.model.installIPA(using: fixture.engine, account: account, teamID: current.teamID, canProvision: true)
+            XCTAssertNil(fixture.model.outputURL)
+            XCTAssertNotNil(fixture.model.error)
+            let installs = await fixture.installer.calls
+            XCTAssertEqual(installs, 0)
+        }
+    }
+
+    @MainActor
     func testOneClickSigningFailureStopsBeforeUpload() async throws {
         let fixture = try await setup(signerFails: true)
         await fixture.model.installIPA(using: fixture.engine, account: account, teamID: "TEAM12345", canProvision: true)
@@ -294,7 +351,8 @@ final class SigningProvisioningViewModelTests: XCTestCase {
     @MainActor
     private func setup(delayed: Bool = false, signerFails: Bool = false, cache: Bool = true,
                        cacheFailure: Bool = false, installFails: Bool = false, delayedInstall: Bool = false,
-                       settings: InstallationSettings? = nil) async throws -> Fixture {
+                       settings: InstallationSettings? = nil, selfProfile: InstalledSelfProfile? = nil,
+                       originalBundle: String = "com.test.app") async throws -> Fixture {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
@@ -305,8 +363,8 @@ final class SigningProvisioningViewModelTests: XCTestCase {
         let probe = SigningDeviceProbeFixture()
         let engine = SigningProvisioningEngineFixture(delayed: delayed, cache: cache, cacheFailure: cacheFailure)
         let installer = OneClickInstallerFixture(fail: installFails, delayed: delayedInstall)
-        let model = SigningViewModel(settings: settings, installer: installer, deviceProbe: probe,
-            inspectBundleID: { _ in "com.test.app" }, materialSigner: { _, material in
+        let model = SigningViewModel(settings: settings, selfRenewalProfile: selfProfile, installer: installer, deviceProbe: probe,
+            inspectBundleID: { _ in originalBundle }, materialSigner: { _, material in
             XCTAssertEqual(material.privateKeyPEM, "synthetic-private-key")
             if signerFails { throw LocSignError.signing("synthetic signing failure") }
             return signed
@@ -330,6 +388,10 @@ private actor SigningProvisioningEngineFixture: ProvisioningEngine {
     private let cacheFailure: Bool
     private var continuation: CheckedContinuation<Void, Never>?
     var requests: [ProvisioningRequest] = []
+    private var cachedRequest: ProvisioningRequest?
+    private var overriddenMaterial: ProvisioningMaterial?
+    func lastCachedRequest() -> ProvisioningRequest? { cachedRequest }
+    func overrideMaterial(_ material: ProvisioningMaterial) { overriddenMaterial = material }
     init(delayed: Bool, cache: Bool, cacheFailure: Bool) {
         self.delayed = delayed; self.cache = cache; self.cacheFailure = cacheFailure
     }
@@ -347,8 +409,10 @@ private actor SigningProvisioningEngineFixture: ProvisioningEngine {
             certificateExpiry: Date().addingTimeInterval(3600), profileExpiry: Date().addingTimeInterval(3600))
     }
     func cachedMaterial(request: ProvisioningRequest) async throws -> ProvisioningMaterial? {
+        cachedRequest = request
         if cacheFailure { throw ProfileValidationError.cms }
         guard cache else { return nil }
+        if let overriddenMaterial { return overriddenMaterial }
         return ProvisioningMaterial(privateKeyPEM: "synthetic-private-key", profileData: Data("synthetic-profile".utf8),
             certificateExpiry: .distantFuture, profileExpiry: .distantFuture)
     }

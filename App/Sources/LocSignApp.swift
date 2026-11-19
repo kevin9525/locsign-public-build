@@ -9,6 +9,7 @@ final class ApplicationServices: ObservableObject {
     let renewal: AppRenewalCoordinator
     let background: RenewalBackgroundService
     let location: LocationViewModel
+    let ownRenewal: SelfRenewalModel
     private var activating = false
 
     init() {
@@ -20,6 +21,7 @@ final class ApplicationServices: ObservableObject {
         signing = SigningViewModel(settings: settings, library: library)
         background = RenewalBackgroundService(renewal: renewal, library: library, settings: settings)
         location = LocationViewModel(settings: settings)
+        ownRenewal = SelfRenewalModel(defaults: settings.defaults)
         background.register()
     }
     func activate() async {
@@ -27,6 +29,7 @@ final class ApplicationServices: ObservableObject {
         guard !activating, installation.operationID == nil else { return }
         activating = true
         defer { activating = false }
+        await ownRenewal.refresh()
         await account.restore()
         await background.foreground()
     }
@@ -42,7 +45,7 @@ struct LocSignApp: App {
                 SigningView(settings: services.installation, model: services.signing, account: services.account)
                     .tabItem { Label("安装", systemImage: "signature") }
                 AppsView(library: services.library, renewal: services.renewal, settings: services.installation,
-                    account: services.account, background: services.background)
+                    account: services.account, ownRenewal: services.ownRenewal, background: services.background)
                     .tabItem { Label("App", systemImage: "square.grid.2x2") }
                 LocationView(model: services.location, settings: services.installation)
                     .tabItem { Label("定位", systemImage: "mappin.and.ellipse") }

@@ -5,6 +5,17 @@ import XCTest
 final class AppRenewalCoordinatorTests: XCTestCase {
     private let date = Date(timeIntervalSince1970: 1_800_000_000)
 
+    func testManualRenewalHonorsNewerInstalledProfileBeyondCatalogExpiry() async throws {
+        let fixture = try await setup()
+        let id = try XCTUnwrap(fixture.library.apps.first?.id)
+        let installedExpiry = date.addingTimeInterval(6 * 86400)
+        let result = await fixture.coordinator.renew(id: id, minimumProfileExpiry: installedExpiry)
+        XCTAssertTrue(result)
+        let requests = await fixture.engine.cachedRequests
+        XCTAssertEqual(requests.first?.minimumProfileExpiry, installedExpiry)
+        XCTAssertGreaterThan(try XCTUnwrap(fixture.library.apps.first?.profileExpiry), installedExpiry)
+    }
+
     func testWrongAccountTeamOrDeviceStopsBeforeMaterialSigningAndUpload() async throws {
         let cases = [
             (appleID: "other@example.com", team: "TEAM", device: "DEVICE"),
