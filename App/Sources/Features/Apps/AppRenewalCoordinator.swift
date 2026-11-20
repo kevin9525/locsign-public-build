@@ -58,7 +58,7 @@ final class AppRenewalCoordinator: ObservableObject {
                 if automatic && (!enabled || !AppRenewalPolicy.due(app, now: now(), runningBundleID: runningBundleID)) { continue }
                 do {
                     try library.recordAttempt(id: id, now: now())
-                    try await renewApp(app, minimumProfileExpiry: minimumProfileExpiry)
+                    try await renewApp(app, automatic: automatic, minimumProfileExpiry: minimumProfileExpiry)
                     stage = app.identity.signingBundleID == runningBundleID ? "等待重新打开 LocSign 核对自身续签" : "\(app.name) 续签完成"
                 } catch {
                     succeeded = false
@@ -79,7 +79,7 @@ final class AppRenewalCoordinator: ObservableObject {
         return result
     }
 
-    private func renewApp(_ app: ManagedApp, minimumProfileExpiry: Date?) async throws {
+    private func renewApp(_ app: ManagedApp, automatic: Bool, minimumProfileExpiry: Date?) async throws {
         try Task.checkCancellation()
         stage = "\(app.name)：检查账号与原 IPA…"; progress = 0
         let source = try library.sourceURL(for: app.id)
@@ -110,9 +110,12 @@ final class AppRenewalCoordinator: ObservableObject {
             guard account.providerAccepted, account.providerEnabled, !account.requiresLogin else {
                 throw LocSignError.install("续签需要重新登录 Apple ID 并确认签名服务，请到安装页处理")
             }
-            // Background and unattended foreground work must never present or
-            // automatically approve certificate revocation.
-            material = try await engine.provision(request: request, confirmRevocation: { _ in false })
+            // Unattended work must preserve certificates. Manual renewal uses
+            // the same explicit decision model as the installation flow.
+            material = try await engine.provision(request: request, confirmRevocation: { [account] candidates in
+                guard !automatic, !Task.isCancelled else { return false }
+                return await account.confirmRevocation(candidates)
+            })
         }
         try Task.checkCancellation()
         guard material.profileExpiry > minimum, material.certificateExpiry > now().addingTimeInterval(AppRenewalPolicy.renewalWindow),

@@ -13,6 +13,7 @@ struct AppsView: View {
     @State private var removal: ManagedApp?
     @State private var selfRenewal: ManagedApp?
     @State private var operation: Task<Void, Never>?
+    @Environment(\.scenePhase) private var scenePhase
 
     private var busy: Bool { settings.operationID != nil || account.isBusy || renewal.isRunning || loading }
 
@@ -105,6 +106,31 @@ struct AppsView: View {
             .task { await ownRenewal.refresh(); await background.requestNotificationsIfNeeded() }
             .onChange(of: settings.host) { _, _ in deviceApps = nil }
             .onChange(of: settings.pairing) { _, _ in deviceApps = nil }
+            .sheet(isPresented: Binding(
+                get: { renewal.isRunning && !account.revocations.isEmpty },
+                set: { if !$0 && renewal.isRunning { account.resolveRevocation(false) } }
+            )) {
+                RenewalCertificateDecisionView(account: account)
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase != .active && renewal.isRunning && !account.revocations.isEmpty {
+                    renewal.cancel()
+                    account.resolveRevocation(false)
+                }
+            }
+            .onChange(of: account.revocations.isEmpty) { _, empty in
+                // A remote quota response can arrive after the app backgrounded.
+                if !empty && renewal.isRunning && scenePhase != .active {
+                    renewal.cancel()
+                    account.resolveRevocation(false)
+                }
+            }
+            .onDisappear {
+                if renewal.isRunning && !account.revocations.isEmpty {
+                    renewal.cancel()
+                    account.resolveRevocation(false)
+                }
+            }
             .alert("清除本地记录与原 IPA？", isPresented: Binding(get: { removal != nil }, set: { if !$0 { removal = nil } })) {
                 Button("取消", role: .cancel) { removal = nil }
                 Button("清除", role: .destructive) {
@@ -137,5 +163,45 @@ struct AppsView: View {
             do { deviceApps = try await InstalledAppBrowser().listApps(host: settings.host, pairingData: pairing) }
             catch { message = ProvisioningRedaction.redact(error.localizedDescription) }
         }
+    }
+}
+
+private struct RenewalCertificateDecisionView: View {
+    @ObservedObject var account: AppleIDProvisioningModel
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text("开发证书数量已达上限，需要撤销下列证书后才能申请新证书。撤销可能影响当前 LocSign 和使用这些证书签名的其他 App；后续申请或安装失败时，可能需要电脑重新覆盖安装。")
+                        .foregroundStyle(.red)
+                }
+                Section("待撤销的证书") {
+                    ForEach(account.revocations) { certificate in
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(certificate.name).font(.headline)
+                            Text("ID：\(certificate.id)")
+                            Text("序列号：\(certificate.serialNumber)")
+                            Text(certificate.expiry, format: .dateTime.year().month().day().hour().minute())
+                        }.font(.footnote).textSelection(.enabled)
+                    }
+                }
+                Section {
+                    Button("保留证书并取消", role: .cancel) { account.resolveRevocation(false) }
+                    Button("撤销列表中的全部证书并继续", role: .destructive) { account.resolveRevocation(true) }
+                        .disabled(account.revocations.isEmpty)
+                } footer: {
+                    Text("确认后会再次核对 Apple 的证书列表。列表发生变化时停止，不按旧名单继续。")
+                }
+            }
+            .navigationTitle("确认撤销开发证书")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { account.resolveRevocation(false) }
+                }
+            }
+        }
+        .interactiveDismissDisabled()
     }
 }
