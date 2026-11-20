@@ -558,6 +558,15 @@ final class DeveloperServicesGatewayTests: XCTestCase {
         XCTAssertFalse(requests.contains { $0.override == "DELETE" })
     }
 
+    func testLegacyAppGroupsFeatureNormalizesWithoutDroppingUnknownFeatures() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setCapabilityResponse(["data": [["id": "cap", "type": "bundleIdCapabilities"]]])
+        try await transport.setLegacyApps([["appIdId": "bundle", "identifier": "com.test.app",
+            "enabledFeatures": ["APG3427HIY", "APP_GROUPS", "inAppPurchase", "FUTURE_FEATURE"]]])
+        let bundle = try await gateway(transport).findExactBundleID("com.test.app")
+        XCTAssertEqual(bundle?.capabilities, ["APP_GROUPS", "IN_APP_PURCHASE", "LEGACY:FUTURE_FEATURE"])
+    }
+
     func testUnparseableCapabilityEnvelopeCanRecoverOnlyFromExplicitLegacyFeatures() async throws {
         let transport = DeveloperAPIFixture()
         await transport.setCapabilityResponse(["unexpected": "synthetic-sensitive-response"])

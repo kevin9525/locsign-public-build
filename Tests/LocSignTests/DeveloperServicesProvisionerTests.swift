@@ -434,9 +434,30 @@ final class DeveloperServicesProvisionerTests: XCTestCase {
     func testProfileMismatchIsNeverReturnedAndUnsupportedCapabilityStopsBeforeMutation() async throws {
         let wrong = try setup(cached: true, failProfile: true, wrongProfile: true)
         do { _ = try await run(wrong); XCTFail("Wrong profile accepted") } catch {}
-        let unsupported = try setup(cached: true, capabilities: ["APP_GROUPS"])
+        let unsupported = try setup(cached: true, capabilities: ["PUSH_NOTIFICATIONS"])
         do { _ = try await run(unsupported); XCTFail("Unsupported capability accepted") } catch {}
         let mutations = await unsupported.gateway.mutations
+        XCTAssertEqual(mutations, [])
+    }
+
+    func testExistingAppGroupsCanReuseAuthenticatedProfileWithoutChangingRemoteConfiguration() async throws {
+        let fixture = try setup(cached: true, capabilities: ["APP_GROUPS", "IN_APP_PURCHASE"],
+                                profileName: "profile-optional-authorizations")
+        let material = try await run(fixture)
+        XCTAssertEqual(material.profileData, try data("profile-optional-authorizations", "mobileprovision"))
+        let claims = try XCTUnwrap(PlistCodec.decode(ProfileParser.parse(material.profileData).signingEntitlements(
+            for: "com.test.app", restrictKeychainToApplication: true)) as? [String: Any])
+        XCTAssertNil(claims["com.apple.security.application-groups"])
+        XCTAssertNil(claims["com.apple.developer.kernel.increased-memory-limit"])
+        let mutations = await fixture.gateway.mutations
+        XCTAssertEqual(mutations, [])
+    }
+
+    func testAppGroupsDoesNotAllowAnUnknownCapabilityBeforeMutation() async throws {
+        let fixture = try setup(cached: true, missingDevice: true, capabilities: ["APP_GROUPS", "LEGACY:FUTURE_FEATURE"])
+        do { _ = try await run(fixture); XCTFail("Unknown capability accepted") }
+        catch ProvisioningError.unsupportedIPA(_) {}
+        let mutations = await fixture.gateway.mutations
         XCTAssertEqual(mutations, [])
     }
 
@@ -447,11 +468,12 @@ final class DeveloperServicesProvisionerTests: XCTestCase {
         let anchors: [Data]
     }
     private func setup(cached: Bool, missingDevice: Bool = false, missingBundle: Bool = false, missingProfile: Bool = false,
-                       failProfile: Bool = false, quota: Bool = false, wrongProfile: Bool = false, capabilities: [String] = []) throws -> Fixture {
+                       failProfile: Bool = false, quota: Bool = false, wrongProfile: Bool = false,
+                       capabilities: [String] = [], profileName: String = "profile-valid") throws -> Fixture {
         let cert = DeveloperCertificate(id: "cert", serial: "69", name: "Synthetic", expiry: now.addingTimeInterval(86400), der: try data("profile-dev", "cer"))
         let pending = PendingSigningMaterial(privateKeyPEM: try data("test-key", "pem"), csr: "synthetic-csr", certificate: cached ? cert : nil)
         let store = PendingStoreFixture(pending: cached ? pending : nil)
-        let profile = DeveloperProfile(id: "profile", content: try data(wrongProfile ? "profile-unsigned" : "profile-valid", wrongProfile ? "plist" : "mobileprovision"))
+        let profile = DeveloperProfile(id: "profile", content: try data(wrongProfile ? "profile-unsigned" : profileName, wrongProfile ? "plist" : "mobileprovision"))
         let gateway = ProvisioningGatewayFixture(store: store, cert: cert, profile: profile, now: now, missingDevice: missingDevice, missingBundle: missingBundle, missingProfile: missingProfile, failProfile: failProfile, quota: quota, capabilities: capabilities)
         return Fixture(gateway: gateway, store: store, keys: KeyFixture(pending: pending), anchors: [try data("profile-root", "cer")])
     }

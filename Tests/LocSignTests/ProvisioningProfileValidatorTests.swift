@@ -4,6 +4,54 @@ import XCTest
 final class ProvisioningProfileValidatorTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
 
+    func testOptionalProfileAuthorizationsDoNotBecomeAutomaticSignatureClaims() throws {
+        for name in ["profile-optional-authorizations", "profile-empty-app-groups"] {
+            let validated = try validate(name: name)
+            let claims = try XCTUnwrap(PlistCodec.decode(validated.profile.signingEntitlements(
+                for: "com.test.app", restrictKeychainToApplication: true)) as? [String: Any])
+            XCTAssertEqual(Set(claims.keys), Set(["application-identifier", "com.apple.developer.team-identifier",
+                                               "get-task-allow", "keychain-access-groups"]))
+            XCTAssertEqual(claims["application-identifier"] as? String, "PREFIX1234.com.test.app")
+            XCTAssertEqual(claims["keychain-access-groups"] as? [String], ["PREFIX1234.com.test.app"])
+            XCTAssertEqual(validated.raw, try fixture(name, "mobileprovision"))
+        }
+    }
+
+    func testOptionalAuthorizationsStillRequireExactIdentityAndValidKey() throws {
+        assertRejects(.metadata) { try self.validate(name: "profile-optional-authorizations", bundle: "com.other.app") }
+        assertRejects(.metadata) { try self.validate(name: "profile-optional-authorizations", team: "OTHERTEAM") }
+        assertRejects(.metadata) { try self.validate(name: "profile-optional-authorizations", udid: "OTHER-DEVICE") }
+        assertRejects(.certificate) {
+            try self.validate(name: "profile-optional-authorizations", key: self.fixture("profile-other-key", "pem"))
+        }
+    }
+
+    func testMalformedOrUnknownOptionalAuthorizationsAndForeignKeychainAreRejected() throws {
+        for name in ["profile-malformed-app-groups", "profile-wildcard-app-groups", "profile-malformed-memory-limit",
+                     "profile-optional-with-unknown", "profile-optional-with-foreign-keychain"] {
+            assertRejects(.metadata) { try self.validate(name: name) }
+        }
+    }
+
+    func testManualSignaturePreservesExplicitProfileAuthorizations() throws {
+        let profile = try ProfileParser.parse(fixture("profile-optional-authorizations", "mobileprovision"))
+        let claims = try XCTUnwrap(PlistCodec.decode(profile.signingEntitlements(for: "com.test.app")) as? [String: Any])
+        XCTAssertEqual(claims["com.apple.security.application-groups"] as? [String], ["group.com.synthetic.test"])
+        XCTAssertEqual(claims["com.apple.developer.kernel.increased-memory-limit"] as? Bool, true)
+    }
+
+    func testAutomaticSignatureOmitsUnusedAuthorizationsFromClaimsOnly() throws {
+        let profile = try ProfileParser.parse(fixture("profile-optional-authorizations", "mobileprovision"))
+        let claims = try XCTUnwrap(PlistCodec.decode(profile.signingEntitlements(
+            for: "com.test.app", restrictKeychainToApplication: true)) as? [String: Any])
+        XCTAssertNil(claims["com.apple.security.application-groups"])
+        XCTAssertNil(claims["com.apple.developer.kernel.increased-memory-limit"])
+        XCTAssertEqual(claims["application-identifier"] as? String, "PREFIX1234.com.test.app")
+        XCTAssertEqual(claims["keychain-access-groups"] as? [String], ["PREFIX1234.com.test.app"])
+        let original = try XCTUnwrap(profile.payload["Entitlements"] as? [String: Any])
+        XCTAssertNotNil(original["com.apple.security.application-groups"])
+    }
+
     func testAppleKeychainAuthorizationWildcardIsNarrowedToOnlyTheApplicationClaim() throws {
         let validated = try validate(name: "profile-keychain-allowlist")
         let claims = try XCTUnwrap(PlistCodec.decode(validated.profile.signingEntitlements(for: "com.test.app", restrictKeychainToApplication: true)) as? [String: Any])
