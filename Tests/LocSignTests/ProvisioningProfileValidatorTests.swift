@@ -8,7 +8,7 @@ final class ProvisioningProfileValidatorTests: XCTestCase {
         for name in ["profile-optional-authorizations", "profile-empty-app-groups"] {
             let validated = try validate(name: name)
             let claims = try XCTUnwrap(PlistCodec.decode(validated.profile.signingEntitlements(
-                for: "com.test.app", restrictKeychainToApplication: true)) as? [String: Any])
+                for: "com.test.app", automaticProvisioning: true)) as? [String: Any])
             XCTAssertEqual(Set(claims.keys), Set(["application-identifier", "com.apple.developer.team-identifier",
                                                "get-task-allow", "keychain-access-groups"]))
             XCTAssertEqual(claims["application-identifier"] as? String, "PREFIX1234.com.test.app")
@@ -43,7 +43,7 @@ final class ProvisioningProfileValidatorTests: XCTestCase {
     func testAutomaticSignatureOmitsUnusedAuthorizationsFromClaimsOnly() throws {
         let profile = try ProfileParser.parse(fixture("profile-optional-authorizations", "mobileprovision"))
         let claims = try XCTUnwrap(PlistCodec.decode(profile.signingEntitlements(
-            for: "com.test.app", restrictKeychainToApplication: true)) as? [String: Any])
+            for: "com.test.app", automaticProvisioning: true)) as? [String: Any])
         XCTAssertNil(claims["com.apple.security.application-groups"])
         XCTAssertNil(claims["com.apple.developer.kernel.increased-memory-limit"])
         XCTAssertEqual(claims["application-identifier"] as? String, "PREFIX1234.com.test.app")
@@ -54,7 +54,7 @@ final class ProvisioningProfileValidatorTests: XCTestCase {
 
     func testAppleKeychainAuthorizationWildcardIsNarrowedToOnlyTheApplicationClaim() throws {
         let validated = try validate(name: "profile-keychain-allowlist")
-        let claims = try XCTUnwrap(PlistCodec.decode(validated.profile.signingEntitlements(for: "com.test.app", restrictKeychainToApplication: true)) as? [String: Any])
+        let claims = try XCTUnwrap(PlistCodec.decode(validated.profile.signingEntitlements(for: "com.test.app", automaticProvisioning: true)) as? [String: Any])
         XCTAssertEqual(claims["keychain-access-groups"] as? [String], ["PREFIX1234.com.test.app"])
         assertRejects(.metadata) { try self.validate(name: "profile-foreign-keychain") }
     }

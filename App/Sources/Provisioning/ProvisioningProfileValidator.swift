@@ -98,9 +98,21 @@ struct ProvisioningProfileValidator {
 
     private static func supports(entitlements: [String: Any], team: String, appID: String) -> Bool {
         let allowed: Set<String> = ["application-identifier", "com.apple.developer.team-identifier",
-                                    "get-task-allow", "keychain-access-groups"]
+                                    "get-task-allow", "keychain-access-groups",
+                                    "com.apple.security.application-groups",
+                                    "com.apple.developer.kernel.increased-memory-limit"]
         guard Set(entitlements.keys).isSubset(of: allowed),
               entitlements["get-task-allow"] as? Bool == true else { return false }
+        // These are profile authorizations, not required executable claims.
+        // Accept only their known shapes; automatic signing does not claim them.
+        if let value = entitlements["com.apple.security.application-groups"] {
+            guard let groups = value as? [String], groups.allSatisfy({
+                $0.range(of: #"^group\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*$"#, options: .regularExpression) != nil
+            }) else { return false }
+        }
+        if let value = entitlements["com.apple.developer.kernel.increased-memory-limit"] {
+            guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else { return false }
+        }
         if let value = entitlements["com.apple.developer.team-identifier"], value as? String != team { return false }
         if let value = entitlements["keychain-access-groups"] {
             guard let prefix = appID.split(separator: ".").first,

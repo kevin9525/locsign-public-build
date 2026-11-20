@@ -8,6 +8,19 @@ final class ProvisioningEngineMaterialTests: XCTestCase {
     // deliberately inaccurate expiry claimed by MaterialBackendFixture.
     private let fixtureProfileExpiry = Date(timeIntervalSince1970: 4_070_908_800)
 
+    func testOptionalAuthorizationsSurviveAuthenticatedStorageAndCacheValidation() async throws {
+        let fixture = try setup(profileName: "profile-optional-authorizations")
+        let account = try await fixture.engine.logIn(appleID: "user@example.com", password: "synthetic", twoFactorCode: { nil })
+        let request = ProvisioningRequest(accountID: account.id, teamID: "TEAM12345", ipaURL: fixture.ipa,
+            deviceUDID: "SYNTHETIC-UDID", minimumProfileExpiry: fixtureProfileExpiry.addingTimeInterval(-1))
+        let material = try await fixture.engine.provision(request: request, confirmRevocation: { _ in false })
+        let cached = try await fixture.engine.cachedMaterial(request: request)
+        XCTAssertEqual(material.profileData, try data("profile-optional-authorizations", "mobileprovision"))
+        XCTAssertEqual(cached?.profileData, material.profileData)
+        XCTAssertEqual(cached?.signingBundleID, "com.test.app")
+        XCTAssertEqual(cached?.profileExpiry, fixtureProfileExpiry)
+    }
+
     func testCachedProfileAtOrBelowMinimumIsMissWithoutReplacingActive() async throws {
         let fixture = try setup()
         let account = try await fixture.engine.logIn(appleID: "user@example.com", password: "synthetic", twoFactorCode: { nil })
@@ -232,7 +245,7 @@ final class ProvisioningEngineMaterialTests: XCTestCase {
         let ipa: URL
         let marker: URL
     }
-    private func setup() throws -> Fixture {
+    private func setup(profileName: String = "profile-valid") throws -> Fixture {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let app = root.appendingPathComponent("staging/Payload/Test.app")
@@ -244,7 +257,7 @@ final class ProvisioningEngineMaterialTests: XCTestCase {
         try FileManager.default.zipItem(at: root.appendingPathComponent("staging"), to: ipa, shouldKeepParent: false)
         let backend = MaterialBackendFixture(pending: PendingSigningMaterial(privateKeyPEM: try data("test-key", "pem"), csr: "synthetic-csr",
             certificate: .init(id: "cert", serial: "01", name: "Synthetic", expiry: Date(timeIntervalSince1970: 4_000_000_000), der: try data("profile-dev", "cer"))),
-            profile: try data("profile-valid", "mobileprovision"), badProfile: try data("profile-unsigned", "plist"))
+            profile: try data(profileName, "mobileprovision"), badProfile: try data("profile-unsigned", "plist"))
         let keychain = ProvisioningKeychain(api: SpyProvisioningKeychainAPI())
         let marker = root.appendingPathComponent("marker")
         let engine = try ProvisioningEngineLive(configuration: .init(endpoint: URL(string: "https://fixture.invalid")!),

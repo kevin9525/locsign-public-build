@@ -18,12 +18,12 @@ final class SigningEngine {
     }
 
     func sign(ipaURL: URL, identity: SigningIdentity, profile: ProvisioningProfileData,
-              restrictKeychainToApplication: Bool = false, signingBundleID: String? = nil) async throws -> URL {
+              automaticProvisioning: Bool = false, signingBundleID: String? = nil) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
             queue.async {
                 do {
                     continuation.resume(returning: try self.signIPA(ipaURL, identity: identity, profile: profile,
-                        restrictKeychainToApplication: restrictKeychainToApplication, signingBundleID: signingBundleID))
+                        automaticProvisioning: automaticProvisioning, signingBundleID: signingBundleID))
                 } catch {
                     continuation.resume(throwing: error)
                 }
@@ -32,7 +32,7 @@ final class SigningEngine {
     }
 
     private func signIPA(_ ipaURL: URL, identity: SigningIdentity,
-                         profile: ProvisioningProfileData, restrictKeychainToApplication: Bool,
+                         profile: ProvisioningProfileData, automaticProvisioning: Bool,
                          signingBundleID: String?) throws -> URL {
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
@@ -66,7 +66,7 @@ final class SigningEngine {
         let output = exports.appendingPathComponent("\(UUID().uuidString).ipa")
         do {
             return try signAppBundle(app: app, workDir: tmp, identity: identity, profile: profile,
-                                     bundleID: bundleID, outputURL: output, restrictKeychainToApplication: restrictKeychainToApplication)
+                                     bundleID: bundleID, outputURL: output, automaticProvisioning: automaticProvisioning)
         } catch {
             try? FileManager.default.removeItem(at: output)
             throw error
@@ -76,12 +76,12 @@ final class SigningEngine {
     @discardableResult
     private func signAppBundle(app: URL, workDir: URL, identity: SigningIdentity,
                                profile: ProvisioningProfileData, bundleID: String, outputURL: URL,
-                               restrictKeychainToApplication: Bool) throws -> URL {
+                               automaticProvisioning: Bool) throws -> URL {
         let profileFile = workDir.appendingPathComponent("embedded.mobileprovision")
         try profile.raw.write(to: profileFile)
         // The patched local Zsign dependency embeds this profile before sealing resources.
         let entsFile = workDir.appendingPathComponent("entitlements.plist")
-        try profile.signingEntitlements(for: bundleID, restrictKeychainToApplication: restrictKeychainToApplication).write(to: entsFile)
+        try profile.signingEntitlements(for: bundleID, automaticProvisioning: automaticProvisioning).write(to: entsFile)
         let keyFile = workDir.appendingPathComponent("identity")
         let password: String
         switch identity {

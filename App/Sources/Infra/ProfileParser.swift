@@ -21,7 +21,7 @@ struct ProvisioningProfileData {
         }
         return bundleID == bundleIdentifier
     }
-    func signingEntitlements(for identifier: String, restrictKeychainToApplication: Bool = false) throws -> Data {
+    func signingEntitlements(for identifier: String, automaticProvisioning: Bool = false) throws -> Data {
         guard permits(bundleIdentifier: identifier),
               var entitlements = payload["Entitlements"] as? [String: Any],
               let applicationID = entitlements["application-identifier"] as? String,
@@ -30,8 +30,15 @@ struct ProvisioningProfileData {
         }
         let concreteID = "\(prefix).\(identifier)"
         entitlements["application-identifier"] = concreteID
+        if automaticProvisioning {
+            // Automatic provisioning only accepts basic IPA claims. Extra
+            // profile authorizations left by another signer are not claims
+            // this executable needs; preserve the original CMS bytes intact.
+            entitlements.removeValue(forKey: "com.apple.security.application-groups")
+            entitlements.removeValue(forKey: "com.apple.developer.kernel.increased-memory-limit")
+        }
         if let groups = entitlements["keychain-access-groups"] as? [String] {
-            if restrictKeychainToApplication {
+            if automaticProvisioning {
                 guard groups.contains(concreteID) || groups.contains("\(prefix).*") else {
                     throw LocSignError.signing("描述文件未授权当前应用的钥匙串组")
                 }

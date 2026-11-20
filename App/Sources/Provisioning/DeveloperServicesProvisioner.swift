@@ -90,6 +90,10 @@ protocol ProvisioningMaterialStoring: Sendable {
 protocol ProvisioningKeyGenerating: Sendable { func generate() throws -> PendingSigningMaterial }
 
 struct DeveloperServicesProvisioner: Sendable {
+    // Existing App Groups authorization may remain on a PC-created App ID.
+    // Preflight only accepts basic IPA claims; automatic signing omits unused
+    // group authorizations without changing Apple's capability configuration.
+    private static let compatibleCapabilities: Set<String> = ["IN_APP_PURCHASE", "APP_GROUPS"]
     let gateway: any DeveloperServicesGateway
     let store: any ProvisioningMaterialStoring
     let keys: any ProvisioningKeyGenerating
@@ -105,7 +109,7 @@ struct DeveloperServicesProvisioner: Sendable {
         let existingBundle = try await gateway.findExactBundleID(app.bundleID)
         if let existingBundle {
             guard existingBundle.identifier == app.bundleID,
-                  Set(existingBundle.capabilities).isSubset(of: ["IN_APP_PURCHASE"]) else {
+                  Set(existingBundle.capabilities).isSubset(of: Self.compatibleCapabilities) else {
                 throw ProvisioningError.unsupportedIPA("现有 App ID 包含不支持的权限，未修改远端配置")
             }
         }
@@ -122,7 +126,7 @@ struct DeveloperServicesProvisioner: Sendable {
         if let existingBundle { bundle = existingBundle }
         else { bundle = try await gateway.createBundleID(app.bundleID, name: app.name) }
         guard bundle.identifier == app.bundleID,
-              Set(bundle.capabilities).isSubset(of: ["IN_APP_PURCHASE"]) else { throw DeveloperServicesError.invalidResponse }
+              Set(bundle.capabilities).isSubset(of: Self.compatibleCapabilities) else { throw DeveloperServicesError.invalidResponse }
 
         let certificates = try await gateway.listCertificates()
         var pending = try await store.loadPending()

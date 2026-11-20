@@ -446,7 +446,7 @@ final class DeveloperServicesProvisionerTests: XCTestCase {
         let material = try await run(fixture)
         XCTAssertEqual(material.profileData, try data("profile-optional-authorizations", "mobileprovision"))
         let claims = try XCTUnwrap(PlistCodec.decode(ProfileParser.parse(material.profileData).signingEntitlements(
-            for: "com.test.app", restrictKeychainToApplication: true)) as? [String: Any])
+            for: "com.test.app", automaticProvisioning: true)) as? [String: Any])
         XCTAssertNil(claims["com.apple.security.application-groups"])
         XCTAssertNil(claims["com.apple.developer.kernel.increased-memory-limit"])
         let mutations = await fixture.gateway.mutations

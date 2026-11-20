@@ -8,6 +8,32 @@ import CryptoKit
 /// 注意：zsign 要求 profile 为真 CMS 结构（d2i_CMS_bio 解析），纯 XML 合成品会被拒。
 final class IPAPackerTests: XCTestCase {
     @MainActor
+    func testAutomaticSignatureKeepsProfileSealAndIdentityWithoutOptionalClaims() async throws {
+        let raw = try Data(contentsOf: fixture("profile-optional-authorizations", "mobileprovision"))
+        let material = ProvisioningMaterial(privateKeyPEM: try String(contentsOf: fixture("test-key", "pem"), encoding: .utf8),
+            profileData: raw, certificateExpiry: .distantFuture, profileExpiry: .distantFuture, signingBundleID: "com.test.app")
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let app = root.appendingPathComponent("Payload/Demo.app")
+        try FileManager.default.createDirectory(at: app, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: XCTUnwrap(Bundle.main.executableURL), to: app.appendingPathComponent("Demo"))
+        try PlistCodec.encodeXML(["CFBundleIdentifier": "com.test.app", "CFBundleExecutable": "Demo"])
+            .write(to: app.appendingPathComponent("Info.plist"))
+        let ipa = root.appendingPathComponent("original.ipa")
+        try IPAPacker.makeZip(fromDirectory: root.appendingPathComponent("Payload"), to: ipa)
+        let output = try await SigningViewModel.signProvisionedMaterial(ipa, material)
+        defer { try? FileManager.default.removeItem(at: output) }
+        let signed = try IPAPacker.unpack(output, into: root.appendingPathComponent("check"))
+        try assertProfileSealed(in: signed, executable: "Demo", profile: raw)
+        XCTAssertEqual(try Data(contentsOf: signed.appendingPathComponent("embedded.mobileprovision")), raw)
+        let claims = try signedEntitlements(Data(contentsOf: signed.appendingPathComponent("Demo")))
+        XCTAssertEqual(claims["application-identifier"] as? String, "PREFIX1234.com.test.app")
+        XCTAssertEqual(claims["keychain-access-groups"] as? [String], ["PREFIX1234.com.test.app"])
+        XCTAssertNil(claims["com.apple.security.application-groups"])
+        XCTAssertNil(claims["com.apple.developer.kernel.increased-memory-limit"])
+    }
+
+    @MainActor
     func testExplicitSigningIdentifierRetargetsOnlyTheSignedCopy() async throws {
         let raw = try Data(contentsOf: fixture("profile-valid", "mobileprovision"))
         let original = ProvisioningMaterial(privateKeyPEM: try String(contentsOf: fixture("test-key", "pem"), encoding: .utf8),

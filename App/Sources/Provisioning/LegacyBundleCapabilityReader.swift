@@ -60,6 +60,7 @@ private struct BundleCapabilitiesRequest: DeveloperServicesRequest {
         return Array(Set(features.map { feature in
             switch feature {
             case "inAppPurchase", "IN_APP_PURCHASE": return "IN_APP_PURCHASE"
+            case "APG3427HIY", "APP_GROUPS": return "APP_GROUPS"
             // Keep every unrecognized feature unsupported by the provisioner.
             // Do not discard it because its legacy name lacks a known mapping.
             default: return "LEGACY:" + feature
