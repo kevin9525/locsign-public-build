@@ -49,6 +49,7 @@ final class SigningViewModel: ObservableObject {
     private let library: ManagedAppLibrary?
     private var managedIdentity: ManagedApp.Identity?
     private var managedMaterial: ProvisioningMaterial?
+    private var inspectedBundleID: String?
     private var ipaURL: URL?
     private var identityData: Data?
     private var isPEM = false
@@ -167,7 +168,6 @@ final class SigningViewModel: ObservableObject {
                          canProvision: Bool, mode: MaterialMode,
                          confirmRevocation: @escaping @Sendable ([CertificateRevocation]) async -> Bool) async {
         guard !busy else { return }
-        guard !awaitingSelfVerification else { stage = SelfInstallationAwaitingVerification.message; return }
         needsAccountSetup = false
         guard mode != .fresh || canProvision else { error = "请先确认 Anisette 提供方及数据用途"; return }
         guard !teamID.isEmpty, account.teams.contains(where: { $0.id == teamID }) else {
@@ -207,6 +207,7 @@ final class SigningViewModel: ObservableObject {
                 identifierTask = nil
                 try check(operation)
                 originalBundle = original
+                inspectedBundleID = original
                 if let selfRenewalProfile,
                    original != "com.locsign.LocSign", original != selfRenewalProfile.bundleID {
                     throw LocSignError.install("请选择 LocSign 的原 IPA；其他应用不能用于自身续签。")
@@ -223,6 +224,9 @@ final class SigningViewModel: ObservableObject {
             }
             let target = try selfRenewalProfile?.bundleID
                 ?? (usesPersonalBundleID ? ProvisioningSigningIdentifier.validate(personalBundleID) : nil)
+            if library?.selfInstallationNeedsRelaunch(bundleID: target ?? originalBundle) == true {
+                throw SelfInstallationAwaitingVerification()
+            }
             stage = "正在连接并验证配对设备…"
             let previousDevice = verifiedDeviceUDID
             let currentDevice = try await deviceProbe.deviceUDID(host: host, pairingData: pairingData)
@@ -307,6 +311,7 @@ final class SigningViewModel: ObservableObject {
             identifierTask = task
             let original = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
             try check(operation)
+            inspectedBundleID = original
             applySigningChoice(bundleID: original, teamID: teamID)
             identifierTeam = teamID
         } catch { if generation == operation { self.error = safeMessage(error) } }
@@ -392,7 +397,9 @@ final class SigningViewModel: ObservableObject {
         isSigning || isImporting || isInstalling || isProvisioning || isPreparingIdentifier || isOneClickInstalling || settings?.operationID != nil
     }
     var awaitingSelfVerification: Bool {
-        library?.selfInstallationNeedsRelaunch(bundleID: Bundle.main.bundleIdentifier) == true
+        let target = selfRenewalProfile?.bundleID
+            ?? (usesPersonalBundleID ? personalBundleID : inspectedBundleID ?? managedIdentity?.signingBundleID)
+        return library?.selfInstallationNeedsRelaunch(bundleID: target) == true
     }
     var canInstall: Bool { ipaURL != nil && pairingData != nil && !busy && !awaitingSelfVerification }
 
@@ -423,6 +430,7 @@ final class SigningViewModel: ObservableObject {
                 }.value
                 if let previous = ipaURL { try? FileManager.default.removeItem(at: previous) }
                 ipaURL = copy
+                inspectedBundleID = nil
                 ipaName = url.lastPathComponent
                 identifierTeam = nil
                 usesPersonalBundleID = false

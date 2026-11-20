@@ -7,6 +7,35 @@ final class SigningLibraryCaptureTests: XCTestCase {
     private let newExpiry = Date(timeIntervalSince1970: 1_800_604_800)
 
     @MainActor
+    func testPendingSelfResultDoesNotBlockAnotherTargetInTheSharedLibrary() async throws {
+        for installSignedOutput in [false, true] {
+            let fixture = try await setup(previouslyInstalled: true)
+            if installSignedOutput {
+                await fixture.model.provisionAndSign(using: fixture.engine, account: fixture.account,
+                    teamID: "TEAM12345", providerAccepted: true)
+            }
+            let source = try fixture.library.sourceURL(for: XCTUnwrap(fixture.library.apps.first?.id))
+            let bundle = try XCTUnwrap(Bundle.main.bundleIdentifier)
+            let identity = ManagedApp.Identity(appleID: "user@example.com", teamID: "TEAM12345", deviceUDID: "ORIGINAL-DEVICE",
+                originalBundleID: "com.locsign.LocSign", signingBundleID: bundle)
+            let material = ProvisioningMaterial(privateKeyPEM: "synthetic-key", profileData: Data("self pending profile".utf8),
+                certificateExpiry: newExpiry, profileExpiry: newExpiry, signingBundleID: bundle)
+            let ownID = try await fixture.library.prepare(source: source, name: "LocSign", identity: identity, material: material)
+            XCTAssertTrue(try fixture.library.markSelfInstallationAwaitingRelaunch(id: ownID))
+            XCTAssertFalse(fixture.model.awaitingSelfVerification)
+            XCTAssertTrue(fixture.model.canInstall)
+            if installSignedOutput { await fixture.model.installSignedIPA() }
+            else { await install(fixture) }
+            XCTAssertTrue(fixture.model.installSucceeded)
+            XCTAssertNil(fixture.model.error)
+            let uploads = await fixture.installer.uploads
+            XCTAssertEqual(uploads.count, 1)
+            XCTAssertNotNil(fixture.library.apps.first(where: { $0.id == ownID })?.pending)
+            XCTAssertTrue(fixture.library.selfInstallationNeedsRelaunch(bundleID: bundle))
+        }
+    }
+
+    @MainActor
     func testSelfDisconnectDuringResultWaitPreservesJournalWithoutReportingFailureOrSuccess() async throws {
         let runningBundle = try XCTUnwrap(Bundle.main.bundleIdentifier)
         let failure = InstallationFailure.wrapping(NSError(domain: "LocSign.DeviceSocket", code: -9806), at: .waitForResult)
@@ -24,6 +53,10 @@ final class SigningLibraryCaptureTests: XCTestCase {
         await install(fixture)
         let uploads = await fixture.installer.uploads
         XCTAssertEqual(uploads.count, 1)
+        let mismatch = ManagedAppLibrary(directory: fixture.libraryDirectory, runningBundleID: runningBundle, currentProfile: Data("previous profile".utf8))
+        try mismatch.reconcileSelf(bundleID: runningBundle, embeddedProfile: Data("previous profile".utf8))
+        XCTAssertFalse(mismatch.selfInstallationNeedsRelaunch(bundleID: runningBundle))
+        XCTAssertNotNil(mismatch.apps.first?.pending)
         let reopened = ManagedAppLibrary(directory: fixture.libraryDirectory, runningBundleID: runningBundle, currentProfile: Data("new profile".utf8))
         try reopened.reconcileSelf(bundleID: runningBundle, embeddedProfile: Data("new profile".utf8))
         XCTAssertNil(reopened.apps.first?.pending)
