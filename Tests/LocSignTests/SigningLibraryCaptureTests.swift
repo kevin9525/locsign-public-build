@@ -7,6 +7,50 @@ final class SigningLibraryCaptureTests: XCTestCase {
     private let newExpiry = Date(timeIntervalSince1970: 1_800_604_800)
 
     @MainActor
+    func testSelfDisconnectDuringResultWaitPreservesJournalWithoutReportingFailureOrSuccess() async throws {
+        let runningBundle = try XCTUnwrap(Bundle.main.bundleIdentifier)
+        let failure = InstallationFailure.wrapping(NSError(domain: "LocSign.DeviceSocket", code: -9806), at: .waitForResult)
+        let fixture = try await setup(installFailure: failure, previouslyInstalled: true, signingBundle: runningBundle)
+        let previous = try XCTUnwrap(fixture.library.apps.first)
+        await install(fixture)
+        XCTAssertFalse(fixture.model.installSucceeded)
+        XCTAssertNil(fixture.model.error)
+        XCTAssertFalse(fixture.model.canInstall)
+        XCTAssertEqual(fixture.library.apps.first?.profileExpiry, previous.profileExpiry)
+        XCTAssertNil(fixture.library.apps.first?.lastError)
+        XCTAssertNotNil(fixture.library.apps.first?.pending)
+        XCTAssertNil(fixture.settings.operationID)
+        await fixture.model.installSignedIPA()
+        await install(fixture)
+        let uploads = await fixture.installer.uploads
+        XCTAssertEqual(uploads.count, 1)
+        let reopened = ManagedAppLibrary(directory: fixture.libraryDirectory, runningBundleID: runningBundle, currentProfile: Data("new profile".utf8))
+        try reopened.reconcileSelf(bundleID: runningBundle, embeddedProfile: Data("new profile".utf8))
+        XCTAssertNil(reopened.apps.first?.pending)
+        XCTAssertEqual(reopened.apps.first?.profileExpiry, newExpiry)
+        XCTAssertEqual(try Data(contentsOf: reopened.sourceURL(for: previous.id)), Data("original unsigned IPA".utf8))
+    }
+
+    @MainActor
+    func testOrdinaryDisconnectAndExplicitSelfRejectionAreNotHidden() async throws {
+        let runningBundle = try XCTUnwrap(Bundle.main.bundleIdentifier)
+        let socket = NSError(domain: "LocSign.DeviceSocket", code: -9806)
+        for (bundle, failure) in [
+            ("org.example.other", InstallationFailure.wrapping(socket, at: .waitForResult)),
+            (runningBundle, InstallationFailure.wrapping(socket, at: .sendInstall)),
+            (runningBundle, InstallationFailure.wrapping(LocSignError.install("ApplicationVerificationFailed"), at: .waitForResult))
+        ] {
+            let fixture = try await setup(installFailure: failure, previouslyInstalled: true, signingBundle: bundle)
+            await install(fixture)
+            XCTAssertFalse(fixture.model.installSucceeded)
+            XCTAssertNotNil(fixture.model.error)
+            XCTAssertNotNil(fixture.library.apps.first?.lastError)
+            XCTAssertEqual(fixture.library.apps.first?.profileExpiry, oldExpiry)
+            XCTAssertTrue(fixture.model.canInstall)
+        }
+    }
+
+    @MainActor
     func testSuccessfulInstallRetainsOriginalIPAAndConfirmedIdentityAcrossRelaunch() async throws {
         let fixture = try await setup()
         await fixture.installer.inspectBeforeUpload { [library = fixture.library] in
@@ -137,6 +181,8 @@ final class SigningLibraryCaptureTests: XCTestCase {
         await install(fixture)
         let uploaded = await fixture.installer.uploads
         XCTAssertEqual(uploaded.count, 1)
+        XCTAssertFalse(fixture.model.installSucceeded, "Own replacement still requires a new launch with the installed profile")
+        XCTAssertFalse(fixture.model.canInstall)
         let saved = try XCTUnwrap(ManagedAppLibrary(directory: fixture.libraryDirectory).apps.first)
         XCTAssertEqual(saved.profileExpiry, previous.profileExpiry)
         XCTAssertEqual(saved.installedAt, previous.installedAt)
@@ -166,7 +212,7 @@ final class SigningLibraryCaptureTests: XCTestCase {
     }
 
     @MainActor
-    private func setup(installFails: Bool = false, previouslyInstalled: Bool = false,
+    private func setup(installFails: Bool = false, installFailure: Error? = nil, previouslyInstalled: Bool = false,
                        signingBundle: String = "org.example.catalog.personal") async throws -> Fixture {
         let suite = UUID().uuidString
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(suite)
@@ -201,7 +247,7 @@ final class SigningLibraryCaptureTests: XCTestCase {
         let account = ProvisioningAccount(id: UUID(), appleID: "User@Example.com", teams: [.init(id: "TEAM12345", name: "Team")])
         let engine = CaptureEngineFixture(material: material)
         let probe = CaptureProbeFixture()
-        let installer = CaptureInstallerFixture(fail: installFails)
+        let installer = CaptureInstallerFixture(fail: installFails, failure: installFailure)
         let signer = CaptureSignerFixture(outputURL: root.appendingPathComponent("signed.ipa"))
         let model = SigningViewModel(settings: settings, library: library, installer: installer, deviceProbe: probe,
             inspectBundleID: { _ in "org.example.catalog" }, materialSigner: signer.sign)
@@ -255,15 +301,17 @@ private actor CaptureEngineFixture: ProvisioningEngine {
 
 private actor CaptureInstallerFixture: IPAInstalling {
     let fail: Bool
+    let failure: Error?
     private var inspection: (@MainActor () throws -> Void)?
     private(set) var uploads: [Data] = []
-    init(fail: Bool) { self.fail = fail }
+    init(fail: Bool, failure: Error? = nil) { self.fail = fail; self.failure = failure }
     func inspectBeforeUpload(_ inspection: @escaping @MainActor () throws -> Void) { self.inspection = inspection }
     func install(ipaURL: URL, host: String, pairingData: Data, progress: @Sendable (Double) async -> Void) async throws {
         try await inspection?()
         uploads.append(try Data(contentsOf: ipaURL))
         _ = try PairingRecord(data: pairingData)
         await progress(1)
+        if let failure { throw failure }
         if fail { throw LocSignError.install("Synthetic installation did not complete") }
     }
 }

@@ -6,6 +6,60 @@ import Combine
 final class AppRenewalCoordinatorTests: XCTestCase {
     private let date = Date(timeIntervalSince1970: 1_800_000_000)
 
+    func testSelfResultDisconnectWaitsForRelaunchWithoutFailureOrDuplicateUpload() async throws {
+        for code in [-9806, -9805] {
+            let failure = InstallationFailure.wrapping(NSError(domain: "LocSign.DeviceSocket", code: code), at: .waitForResult)
+            let fixture = try await setup(installFailure: failure, runningBundleID: "org.example.personal0")
+            let old = try XCTUnwrap(fixture.library.apps.first)
+            let result = await fixture.coordinator.renew(id: old.id)
+            XCTAssertFalse(result, "A disconnected result is not confirmed success")
+            XCTAssertNil(fixture.coordinator.error)
+            let saved = try XCTUnwrap(fixture.library.apps.first)
+            XCTAssertNil(saved.lastError)
+            XCTAssertNotNil(saved.pending)
+            XCTAssertEqual(saved.profileExpiry, old.profileExpiry)
+            XCTAssertEqual(try Data(contentsOf: fixture.library.sourceURL(for: old.id)), Data("original IPA 0".utf8))
+            XCTAssertNil(fixture.settings.operationID)
+            _ = await fixture.coordinator.renew(id: old.id)
+            let uploads = await fixture.installer.uploads
+            XCTAssertEqual(uploads.count, 1, "Do not re-sign or reinstall before checking the prior self replacement")
+
+            let mismatch = ManagedAppLibrary(directory: fixture.folder, runningBundleID: "org.example.personal0", currentProfile: Data("old-profile".utf8))
+            try mismatch.reconcileSelf(bundleID: "org.example.personal0", embeddedProfile: Data("old-profile".utf8))
+            XCTAssertNotNil(mismatch.apps.first?.pending)
+            XCTAssertEqual(mismatch.apps.first?.profileExpiry, old.profileExpiry)
+            let reopened = ManagedAppLibrary(directory: fixture.folder, runningBundleID: "org.example.personal0", currentProfile: Data("renewed-profile".utf8))
+            try reopened.reconcileSelf(bundleID: "org.example.personal0", embeddedProfile: Data("renewed-profile".utf8))
+            XCTAssertNil(reopened.apps.first?.pending)
+            XCTAssertNil(reopened.apps.first?.lastError)
+            XCTAssertEqual(reopened.apps.first?.profileExpiry, date.addingTimeInterval(7 * 86400))
+        }
+    }
+
+    func testOrdinaryAndNonTransportSelfFailuresRemainErrors() async throws {
+        let socket = NSError(domain: "LocSign.DeviceSocket", code: -9806)
+        let cases: [(String, Error)] = [
+            ("org.example.locsign", InstallationFailure.wrapping(socket, at: .waitForResult)),
+            ("org.example.personal0", InstallationFailure.wrapping(socket, at: .sendInstall)),
+            ("org.example.personal0", InstallationFailure.wrapping(socket, at: .upload)),
+            ("org.example.personal0", InstallationFailure.wrapping(NSError(domain: "LocSign.DeviceSocket", code: -9807), at: .waitForResult)),
+            ("org.example.personal0", InstallationFailure.wrapping(NSError(domain: "ServerRejection", code: -9806), at: .waitForResult)),
+            ("org.example.personal0", InstallationFailure.wrapping(LocSignError.install("ApplicationVerificationFailed"), at: .waitForResult)),
+            ("org.example.personal0", socket),
+            ("org.example.personal0", CancellationError())
+        ]
+        for (bundle, failure) in cases {
+            let fixture = try await setup(installFailure: failure, runningBundleID: bundle)
+            let old = try XCTUnwrap(fixture.library.apps.first)
+            let result = await fixture.coordinator.renew(id: old.id)
+            XCTAssertFalse(result)
+            XCTAssertNotNil(fixture.coordinator.error)
+            XCTAssertNotNil(fixture.library.apps.first?.lastError)
+            XCTAssertEqual(fixture.library.apps.first?.profileExpiry, old.profileExpiry)
+            XCTAssertNil(fixture.settings.operationID)
+        }
+    }
+
     func testManualRenewalHonorsNewerInstalledProfileBeyondCatalogExpiry() async throws {
         let fixture = try await setup()
         let id = try XCTUnwrap(fixture.library.apps.first?.id)
@@ -397,7 +451,7 @@ final class AppRenewalCoordinatorTests: XCTestCase {
     }
 
     private func setup(appleID: String = "user@example.com", team: String = "TEAM", device: String = "DEVICE",
-                       appCount: Int = 1, delayedInstall: Bool = false, installFails: Bool = false,
+                       appCount: Int = 1, delayedInstall: Bool = false, installFails: Bool = false, installFailure: Error? = nil,
                        mode: RenewalEngineFixture.Mode = .cached, profileLifetime: TimeInterval = 7 * 86400,
                        runningBundleID: String = "org.example.locsign") async throws -> Fixture {
         let suite = UUID().uuidString
@@ -413,7 +467,7 @@ final class AppRenewalCoordinatorTests: XCTestCase {
         let pairingURL = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "pairing-record", withExtension: "plist"))
         try settings.savePairing(data: Data(contentsOf: pairingURL), name: "synthetic.plist")
         let folder = root.appendingPathComponent("Library")
-        let library = ManagedAppLibrary(directory: folder)
+        let library = ManagedAppLibrary(directory: folder, runningBundleID: runningBundleID, currentProfile: Data("old-profile".utf8))
         for index in 0..<appCount {
             let source = root.appendingPathComponent("source-\(index).ipa")
             try Data("original IPA \(index)".utf8).write(to: source)
@@ -432,7 +486,7 @@ final class AppRenewalCoordinatorTests: XCTestCase {
         let account = AppleIDProvisioningModel(settings: settings) { _ in engine }
         account.providerAccepted = true
         let probe = RenewalDeviceFixture(device: device)
-        let installer = RenewalInstallerFixture(delayed: delayedInstall, fail: installFails)
+        let installer = RenewalInstallerFixture(delayed: delayedInstall, fail: installFails, failure: installFailure)
         let signer = RenewalSignerFixture(directory: root)
         let clock = RenewalClockFixture(date: date)
         let coordinator = AppRenewalCoordinator(settings: settings, library: library, account: account,
@@ -516,9 +570,10 @@ private actor RenewalInstallerFixture: IPAInstalling {
     nonisolated let started = XCTestExpectation(description: "Renewal installer entered")
     let delayed: Bool
     let fail: Bool
+    let failure: Error?
     private var continuation: CheckedContinuation<Void, Never>?
     private(set) var uploads: [Data] = []
-    init(delayed: Bool, fail: Bool) { self.delayed = delayed; self.fail = fail }
+    init(delayed: Bool, fail: Bool, failure: Error? = nil) { self.delayed = delayed; self.fail = fail; self.failure = failure }
     func release() { continuation?.resume(); continuation = nil }
     func install(ipaURL: URL, host: String, pairingData: Data, progress: @Sendable (Double) async -> Void) async throws {
         uploads.append(try Data(contentsOf: ipaURL))
@@ -526,6 +581,7 @@ private actor RenewalInstallerFixture: IPAInstalling {
         if delayed && uploads.count == 1 {
             await withCheckedContinuation { continuation in self.continuation = continuation; started.fulfill() }
         }
+        if let failure { throw failure }
         if fail { throw LocSignError.install("Synthetic upload failure") }
         await progress(1)
     }
