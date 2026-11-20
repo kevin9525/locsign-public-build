@@ -1,0 +1,11 @@
+# Self-renewal capability lookup compatibility
+
+The build25 device screenshot stops at `readCapabilities / invalidResponse` while renewing LocSign with its installed identity. The original IPA passed package validation. The REST gateway currently requires a capability type on every relationship record; generated response decoding failures are reported identically. The failing response itself is unavailable, so a specific missing field is not confirmed on-device. Arbitrary string capability names are already supported by the generated enum and are not alone a decoding failure.
+
+The bounded repair verifies capabilities through Apple's authenticated `ios/listAppIds` read when, and only when, REST capability reading reports an invalid response. The alternate response must identify exactly one matching bundle identifier, the same Apple resource ID, and an explicit `enabledFeatures` array. Missing or contradictory evidence stops provisioning. An empty array is acceptable; an absent array is not. Known in-app-purchase spelling is normalized; other features remain unsupported. Already observed REST capabilities remain present. No remote capability, application, profile, or certificate is deleted by this recovery.
+
+HTTP rejection, transport failure and cancellation do not trigger this fallback. Alternate-query errors retain the operation and safe status/code. Diagnostics contain only fixed messages and counts, without account/device identifiers, headers, request bodies, certificate contents, or raw Apple responses. Profile validation and self-renewal identity/expiry checks remain authoritative after lookup.
+
+Reference checked: SideStore AltSign's `Sources/ALTAppleAPI+Operations.swift` uses `ios/listAppIds.action`, and `Sources/Model/ALTAppID.swift` reads `appIdId`, `identifier`, and `enabledFeatures`. This change uses the existing XKit legacy request client and independently implements strict verification; no upstream source was copied.
+
+Validation is pending. Regression fixtures are synthetic. Windows has no Xcode; simulator XCTest and device compilation run in the approved public build repository. Device acceptance still requires cover-updating the existing LocSign, running self-renewal, reopening it, and confirming the installed profile has a later expiry.

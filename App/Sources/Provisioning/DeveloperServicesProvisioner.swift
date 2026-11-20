@@ -18,6 +18,7 @@ enum DeveloperServicesError: LocalizedError, Equatable {
     case profileRejected(Int, DeveloperProfileReason)
     case certificateResponse(CertificateResponseProblem), issuedCertificateMissing, issuedCertificateConflict
     case certificateRecoveryPending
+    case capabilityVerificationFailed
 
     var errorDescription: String? {
         switch self {
@@ -33,6 +34,7 @@ enum DeveloperServicesError: LocalizedError, Equatable {
         case .issuedCertificateMissing: return "已收到签发证书，但 Apple 证书列表中尚未找到对应记录"
         case .issuedCertificateConflict: return "Apple 证书列表中的匹配记录不唯一或证书内容不一致，已停止使用"
         case .certificateRecoveryPending: return "证书申请结果尚待确认，查询中尚未取得与当前私钥匹配的有效证书。申请材料已保留，可稍后重试查询；重试不会重复申请或撤销证书"
+        case .capabilityVerificationFailed: return "Apple 权限详情格式不兼容，备用查询也未能确认同一应用的启用权限，已停止申请材料（A01）"
         }
     }
 }

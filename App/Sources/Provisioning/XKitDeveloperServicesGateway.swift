@@ -37,14 +37,14 @@ struct XKitDeveloperServicesGateway: DeveloperServicesGateway {
             }
             guard matches.count <= 1 else { throw DeveloperServicesError.invalidResponse }
             guard let bundle = matches.first else { return nil }
-            return try await Self.bundle(bundle, api: api)
+            return try await self.bundle(bundle, api: api)
         }
     }
     func createBundleID(_ identifier: String, name: String) async throws -> DeveloperBundle {
         try await call(.createBundle) { api in
             let response = try await api.bundleIdsCreateInstance(body: .json(.init(data: .init(
                 _type: .bundleIds, attributes: .init(name: name, platform: .init(.ios), identifier: identifier)))))
-            return try await Self.bundle(response.created.body.json.data, api: api)
+            return try await self.bundle(response.created.body.json.data, api: api)
         }
     }
     func listCertificates() async throws -> [DeveloperCertificate] {
@@ -187,21 +187,42 @@ struct XKitDeveloperServicesGateway: DeveloperServicesGateway {
               let status = value.attributes?.status else { throw DeveloperServicesError.invalidResponse }
         return DeveloperDevice(id: value.id, udid: udid, enabled: (status.value1?.rawValue ?? status.value2) == "ENABLED")
     }
-    private static func bundle(_ value: Components.Schemas.BundleId, api: DeveloperAPIClient) async throws -> DeveloperBundle {
+    private func bundle(_ value: Components.Schemas.BundleId, api: DeveloperAPIClient) async throws -> DeveloperBundle {
         guard !value.id.isEmpty, let identifier = value.attributes?.identifier, !identifier.isEmpty else { throw DeveloperServicesError.invalidResponse }
         var capabilities: [String] = []
         do {
+            var incomplete = false
             for try await page in DeveloperAPIPages(request: {
                 try await api.bundleIdsBundleIdCapabilitiesGetToManyRelated(path: .init(id: value.id)).ok.body.json
             }, next: { $0.links.next }) {
                 for capability in page.data {
                     guard let type = capability.attributes?.capabilityType,
-                          let name = type.value1?.rawValue ?? type.value2 else { throw DeveloperServicesError.invalidResponse }
+                          let name = type.value1?.rawValue ?? type.value2, !name.isEmpty else {
+                        incomplete = true
+                        continue
+                    }
                     capabilities.append(name)
                 }
             }
+            if incomplete { throw DeveloperServicesError.invalidResponse }
         } catch {
-            throw failure(error, at: .readCapabilities)
+            let failure = Self.failure(error, at: .readCapabilities)
+            guard let classified = failure as? DeveloperServicesFailure,
+                  classified.step == .readCapabilities, classified.reason == .invalidResponse else { throw failure }
+            // Never infer empty capabilities from an unreadable REST response.
+            // Independently verify the same resource through Apple's legacy read.
+            AppLogger.log(.info, "Provisioning", "Capability response incompatible; verifying through alternate read")
+            do {
+                let verified = try await LegacyBundleCapabilityReader(auth: auth, provider: provider, client: client)
+                    .capabilities(resourceID: value.id, identifier: identifier)
+                // A partial REST page may already have exposed an unsupported
+                // capability. Alternate evidence cannot erase that observation.
+                capabilities = Array(Set(capabilities).union(verified))
+                AppLogger.log(.info, "Provisioning", "Alternate capability read verified; count=\(capabilities.count)")
+            } catch {
+                AppLogger.log(.warn, "Provisioning", "Alternate capability read failed verification")
+                throw Self.failure(error, at: .readCapabilities)
+            }
         }
         return DeveloperBundle(id: value.id, identifier: identifier, capabilities: capabilities.sorted())
     }

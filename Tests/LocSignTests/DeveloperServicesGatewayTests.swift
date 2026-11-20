@@ -596,6 +596,31 @@ final class DeveloperServicesGatewayTests: XCTestCase {
         XCTAssertFalse(Set(capabilities).isSubset(of: ["IN_APP_PURCHASE"]))
     }
 
+    func testLegacyFallbackCannotEraseAlreadyObservedRESTCapabilities() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setCapabilityResponse(["data": [
+            ["id": "groups", "type": "bundleIdCapabilities", "attributes": ["capabilityType": "APP_GROUPS"]],
+            ["id": "incomplete", "type": "bundleIdCapabilities"]
+        ]])
+        try await transport.setLegacyApps([["appIdId": "bundle", "identifier": "com.test.app", "enabledFeatures": []]])
+        let bundle = try await gateway(transport).findExactBundleID("com.test.app")
+        XCTAssertEqual(bundle?.capabilities, ["APP_GROUPS"])
+    }
+
+    func testCapabilityNetworkAndCancellationDoNotTriggerFallback() async throws {
+        for cancel in [false, true] {
+            let transport = DeveloperAPIFixture()
+            await transport.setCapabilityTransportFailure(cancel: cancel)
+            do { _ = try await gateway(transport).findExactBundleID("com.test.app"); XCTFail("Transport failure accepted") }
+            catch {
+                if cancel { XCTAssertTrue(error is CancellationError) }
+                else { XCTAssertEqual(error as? DeveloperServicesFailure, .init(step: .readCapabilities, reason: .network)) }
+            }
+            let requests = await transport.requests
+            XCTAssertFalse(requests.contains { $0.path.contains("listAppIds") })
+        }
+    }
+
     func testLegacyFallbackRejectsMissingAmbiguousOrChangedIdentityAndMissingFeatures() async throws {
         let good: [String: Any] = ["appIdId": "bundle", "identifier": "com.test.app", "enabledFeatures": []]
         let cases: [[[String: Any]]] = [
@@ -639,6 +664,19 @@ final class DeveloperServicesGatewayTests: XCTestCase {
         catch {
             XCTAssertEqual(error as? DeveloperServicesFailure, .init(step: .readCapabilities, reason: .appleRejected(7460)))
             XCTAssertFalse(error.localizedDescription.contains("synthetic-sensitive-response"))
+        }
+    }
+
+    func testLegacyFallbackPreservesNetworkFailureAndCancellation() async throws {
+        for cancel in [false, true] {
+            let transport = DeveloperAPIFixture()
+            await transport.setCapabilityResponse(["data": [["id": "cap", "type": "bundleIdCapabilities"]]])
+            await transport.setLegacyTransportFailure(cancel: cancel)
+            do { _ = try await gateway(transport).findExactBundleID("com.test.app"); XCTFail("Fallback transport failure accepted") }
+            catch {
+                if cancel { XCTAssertTrue(error is CancellationError) }
+                else { XCTAssertEqual(error as? DeveloperServicesFailure, .init(step: .readCapabilities, reason: .network)) }
+            }
         }
     }
 
@@ -711,6 +749,10 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
     private var capabilityPayload: Data?
     private var capabilityStatus = 200
     private var legacyAppsPayload: Data?
+    private var capabilityTransportCancel: Bool?
+    private var legacyTransportCancel: Bool?
+    func setCapabilityTransportFailure(cancel: Bool) { capabilityTransportCancel = cancel }
+    func setLegacyTransportFailure(cancel: Bool) { legacyTransportCancel = cancel }
     func setCapabilityResponse(_ payload: [String: Any], status: Int = 200) {
         var complete = payload
         complete["links"] = ["self": "https://developerservices2.apple.com/services/v1/bundleIds/bundle/bundleIdCapabilities"]
@@ -764,11 +806,19 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
         let method = request.headerFields[.init("X-HTTP-Method-Override")!] ?? request.method.rawValue
         let path = request.path ?? ""
         requests.append(.init(host: baseURL.host, path: path, token: request.headerFields[.init("X-Apple-GS-Token")!], team: team, body: String(data: bytes, encoding: .utf8), override: method))
+        if path == "/v1/bundleIds/bundle/bundleIdCapabilities", let cancel = capabilityTransportCancel {
+            if cancel { throw CancellationError() }
+            throw ProvisioningNetworkError.transport
+        }
         if path == "/v1/bundleIds/bundle/bundleIdCapabilities", let capabilityPayload {
             return (.init(status: .init(code: capabilityStatus), headerFields: [.contentType: "application/json"]), HTTPBody(capabilityPayload))
         }
-        if path.contains("ios/listAppIds.action"), let legacyAppsPayload {
-            return (.init(status: .ok), HTTPBody(legacyAppsPayload))
+        if path.contains("ios/listAppIds.action") {
+            if let cancel = legacyTransportCancel {
+                if cancel { throw CancellationError() }
+                throw ProvisioningNetworkError.transport
+            }
+            if let legacyAppsPayload { return (.init(status: .ok), HTTPBody(legacyAppsPayload)) }
         }
         if path == "/v1/profiles", method == "POST", !profileConflicts.isEmpty {
             let error = profileConflicts.removeFirst()
