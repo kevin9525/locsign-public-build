@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import ZIPFoundation
 
 enum SigningInput: Equatable { case ipa, identity, profile, pairing }
 
@@ -50,6 +51,8 @@ final class SigningViewModel: ObservableObject {
     private var managedIdentity: ManagedApp.Identity?
     private var managedMaterial: ProvisioningMaterial?
     private var inspectedBundleID: String?
+    private var outputBundleID: String?
+    private let runningBundleID: String?
     private var ipaURL: URL?
     private var identityData: Data?
     private var isPEM = false
@@ -70,9 +73,11 @@ final class SigningViewModel: ObservableObject {
     init(settings: InstallationSettings? = nil, library: ManagedAppLibrary? = nil,
          selfRenewalProfile: InstalledSelfProfile? = nil,
          installer: any IPAInstalling = InstallCoordinator(), deviceProbe: any PairedDeviceProbing = ProvisioningDeviceProbe(),
+         runningBundleID: String? = Bundle.main.bundleIdentifier,
          inspectBundleID: @escaping @Sendable (URL) throws -> String = { try ProvisioningIPAPreflight().inspect($0).bundleID },
          materialSigner: (@MainActor (URL, ProvisioningMaterial) async throws -> URL)? = nil) {
         self.library = library
+        self.runningBundleID = runningBundleID
         self.selfRenewalProfile = selfRenewalProfile
         self.settings = settings
         self.inspectBundleID = inspectBundleID
@@ -199,7 +204,7 @@ final class SigningViewModel: ObservableObject {
         do {
             stage = "正在检查 IPA…"
             var originalBundle: String?
-            if mode == .install || settings != nil || selfRenewalProfile != nil {
+            if mode == .install || settings != nil || library != nil || selfRenewalProfile != nil {
                 let inspect = inspectBundleID
                 let task = Task.detached(priority: .userInitiated) { try inspect(ipaURL) }
                 identifierTask = task
@@ -270,6 +275,7 @@ final class SigningViewModel: ObservableObject {
             catch { try? FileManager.default.removeItem(at: output); throw error }
             guard FileManager.default.fileExists(atPath: output.path) else { throw LocSignError.signing("签名未生成文件") }
             outputURL = output
+            outputBundleID = material.signingBundleID ?? target ?? originalBundle
             outputIsProvisioned = true
             profileExpiry = material.profileExpiry
             certificateExpiry = material.certificateExpiry
@@ -343,13 +349,13 @@ final class SigningViewModel: ObservableObject {
                 }
             }
             try check(operation)
-            if let recordID, managedIdentity?.signingBundleID == Bundle.main.bundleIdentifier,
+            if let recordID, managedIdentity?.signingBundleID == runningBundleID,
                try library?.markSelfInstallationAwaitingRelaunch(id: recordID) == true {
                 throw SelfInstallationAwaitingVerification()
             }
             installSucceeded = true
             installProgress = 1
-            if let recordID, managedIdentity?.signingBundleID != Bundle.main.bundleIdentifier {
+            if let recordID, managedIdentity?.signingBundleID != runningBundleID {
                 do { try library?.confirmInstallation(id: recordID) }
                 catch { self.error = "安装已完成，但保存应用记录失败：" + safeMessage(error) }
             }
@@ -357,14 +363,14 @@ final class SigningViewModel: ObservableObject {
             throw SelfInstallationAwaitingVerification()
         } catch {
             if !Task.isCancelled, generation == operation,
-               let recordID, managedIdentity?.signingBundleID == Bundle.main.bundleIdentifier,
+               let recordID, managedIdentity?.signingBundleID == runningBundleID,
                InstallationFailure.isResultConnectionClosed(error),
                try library?.markSelfInstallationAwaitingRelaunch(id: recordID) == true {
                 throw SelfInstallationAwaitingVerification()
             }
             if let recordID {
                 try? library?.fail(id: recordID, message: safeMessage(error),
-                    preservePending: managedIdentity?.signingBundleID == Bundle.main.bundleIdentifier)
+                    preservePending: managedIdentity?.signingBundleID == runningBundleID)
             }
             throw error
         }
@@ -397,7 +403,7 @@ final class SigningViewModel: ObservableObject {
         isSigning || isImporting || isInstalling || isProvisioning || isPreparingIdentifier || isOneClickInstalling || settings?.operationID != nil
     }
     var awaitingSelfVerification: Bool {
-        let target = selfRenewalProfile?.bundleID
+        let target = outputBundleID ?? selfRenewalProfile?.bundleID
             ?? (usesPersonalBundleID ? personalBundleID : inspectedBundleID ?? managedIdentity?.signingBundleID)
         return library?.selfInstallationNeedsRelaunch(bundleID: target) == true
     }
@@ -508,8 +514,34 @@ final class SigningViewModel: ObservableObject {
             identity = .pem(pem)
         } else { identity = .pkcs12(data, password: password) }
         do {
-            outputURL = try await SigningEngine.shared.sign(ipaURL: ipaURL, identity: identity, profile: profile)
+            let output = try await SigningEngine.shared.sign(ipaURL: ipaURL, identity: identity, profile: profile)
+            do {
+                // Manual signing keeps the actual IPA identity, independent of
+                // the automatic flow's personal-identifier settings.
+                outputBundleID = try await Task.detached(priority: .utility) { try Self.signedBundleID(in: output) }.value
+                outputURL = output
+            } catch { try? FileManager.default.removeItem(at: output); throw error }
         } catch { self.error = error.localizedDescription }
+    }
+
+    private nonisolated static func signedBundleID(in output: URL) throws -> String {
+        let archive = try Archive(url: output, accessMode: .read)
+        let entries = archive.filter {
+            let parts = $0.path.split(separator: "/")
+            return parts.count == 3 && parts[0] == "Payload" && parts[1].hasSuffix(".app") && parts[2] == "Info.plist"
+        }
+        guard entries.count == 1, let entry = entries.first, entry.type == .file,
+              entry.uncompressedSize <= 1_048_576 else { throw LocSignError.signing("签名产物的应用信息无效") }
+        var data = Data()
+        _ = try archive.extract(entry) { chunk in
+            guard data.count + chunk.count <= 1_048_576 else { throw LocSignError.signing("签名产物的应用信息过大") }
+            data.append(chunk)
+        }
+        guard let info = try PlistCodec.decode(data) as? [String: Any],
+              let identifier = info["CFBundleIdentifier"] as? String else {
+            throw LocSignError.signing("签名产物缺少应用标识")
+        }
+        return try ProvisioningSigningIdentifier.validate(identifier)
     }
 
     private func readSmallFile(_ url: URL) throws -> Data {
@@ -522,6 +554,7 @@ final class SigningViewModel: ObservableObject {
         guard !isInstalling else { return }
         if let outputURL { try? FileManager.default.removeItem(at: outputURL) }
         outputURL = nil
+        outputBundleID = nil
         outputIsProvisioned = false
         managedIdentity = nil
         managedMaterial = nil

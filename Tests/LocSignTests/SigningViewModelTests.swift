@@ -4,6 +4,33 @@ import ZIPFoundation
 
 final class SigningViewModelTests: XCTestCase {
     @MainActor
+    func testManualOutputUsesActualBundleInsteadOfAutomaticIdentifierForPendingGuard() async throws {
+        for isSelf in [true, false] {
+            let runningBundle = isSelf ? "com.test.app" : "org.example.running"
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let library = ManagedAppLibrary(directory: folder, runningBundleID: runningBundle, currentProfile: Data("old".utf8))
+            let installer = ManualPendingInstaller()
+            let model = try await signedModel(installer: installer, library: library, runningBundleID: runningBundle,
+                personalTarget: isSelf ? "org.example.other" : runningBundle)
+            defer { model.discardOutput() }
+            let output = try XCTUnwrap(model.outputURL)
+            let identity = ManagedApp.Identity(appleID: "user@example.com", teamID: "TEAM", deviceUDID: "DEVICE",
+                originalBundleID: runningBundle, signingBundleID: runningBundle)
+            let material = ProvisioningMaterial(privateKeyPEM: "synthetic", profileData: Data("new".utf8),
+                certificateExpiry: .distantFuture, profileExpiry: .distantFuture, signingBundleID: runningBundle)
+            let id = try await library.prepare(source: output, name: "Self", identity: identity, material: material)
+            XCTAssertTrue(try library.markSelfInstallationAwaitingRelaunch(id: id))
+            await model.importFile(try fixture("pairing-record", "plist"), as: .pairing)
+            XCTAssertEqual(model.awaitingSelfVerification, isSelf)
+            await model.installSignedIPA()
+            let calls = await installer.calls
+            XCTAssertEqual(calls, isSelf ? 0 : 1)
+            XCTAssertEqual(model.installSucceeded, !isSelf)
+            XCTAssertNotNil(library.apps.first?.pending)
+        }
+    }
+    @MainActor
     func testImportingPairingRecordPreservesSignedIPA() async throws {
         let model = try await signedModel()
         defer { model.discardOutput() }
@@ -34,8 +61,9 @@ final class SigningViewModelTests: XCTestCase {
     }
 
     @MainActor
-    private func signedModel(installer: any IPAInstalling = InstallCoordinator()) async throws -> SigningViewModel {
-        let model = SigningViewModel(installer: installer)
+    private func signedModel(installer: any IPAInstalling = InstallCoordinator(), library: ManagedAppLibrary? = nil,
+                             runningBundleID: String? = Bundle.main.bundleIdentifier, personalTarget: String? = nil) async throws -> SigningViewModel {
+        let model = SigningViewModel(library: library, installer: installer, runningBundleID: runningBundleID)
         let keyURL = try fixture("test-key", "pem")
         let profileURL = try fixture("test-profile", "mobileprovision")
         let hostBinary = try XCTUnwrap(Bundle.main.executableURL)
@@ -57,6 +85,7 @@ final class SigningViewModelTests: XCTestCase {
         await model.importFile(ipa, as: .ipa)
         await model.importFile(keyURL, as: .identity)
         await model.importFile(profileURL, as: .profile)
+        if let personalTarget { model.usesPersonalBundleID = true; model.personalBundleID = personalTarget }
         await model.sign()
         let signedIPA = try XCTUnwrap(model.outputURL)
         XCTAssertTrue(FileManager.default.fileExists(atPath: signedIPA.path))
@@ -65,6 +94,14 @@ final class SigningViewModelTests: XCTestCase {
 
     private func fixture(_ name: String, _ ext: String) throws -> URL {
         try XCTUnwrap(Bundle(for: SigningViewModelTests.self).url(forResource: name, withExtension: ext))
+    }
+}
+
+private actor ManualPendingInstaller: IPAInstalling {
+    private(set) var calls = 0
+    func install(ipaURL: URL, host: String, pairingData: Data, progress: @Sendable (Double) async -> Void) async throws {
+        calls += 1
+        await progress(1)
     }
 }
 
