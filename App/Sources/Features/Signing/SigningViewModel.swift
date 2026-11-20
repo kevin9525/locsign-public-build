@@ -78,6 +78,7 @@ final class SigningViewModel: ObservableObject {
         self.installer = installer
         self.deviceProbe = deviceProbe
         self.materialSigner = materialSigner ?? Self.signProvisionedMaterial
+        library?.$apps.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &subscriptions)
         if let settings {
             deviceHost = settings.host
             settings.$pairing.sink { [weak self] saved in
@@ -166,6 +167,7 @@ final class SigningViewModel: ObservableObject {
                          canProvision: Bool, mode: MaterialMode,
                          confirmRevocation: @escaping @Sendable ([CertificateRevocation]) async -> Bool) async {
         guard !busy else { return }
+        guard !awaitingSelfVerification else { stage = SelfInstallationAwaitingVerification.message; return }
         needsAccountSetup = false
         guard mode != .fresh || canProvision else { error = "请先确认 Anisette 提供方及数据用途"; return }
         guard !teamID.isEmpty, account.teams.contains(where: { $0.id == teamID }) else {
@@ -283,6 +285,8 @@ final class SigningViewModel: ObservableObject {
                 try await upload(output, host: host, pairing: pairingData, operation: operation)
                 stage = selfRenewalProfile == nil ? "安装完成" : "等待重新打开 LocSign 核对自身续签"
             } else { stage = "签名完成" }
+        } catch is SelfInstallationAwaitingVerification {
+            if generation == operation { self.error = nil; stage = SelfInstallationAwaitingVerification.message }
         } catch {
             if generation == operation {
                 if error as? ProvisioningError == .invalidAccount { needsAccountSetup = true }
@@ -334,13 +338,25 @@ final class SigningViewModel: ObservableObject {
                 }
             }
             try check(operation)
+            if let recordID, managedIdentity?.signingBundleID == Bundle.main.bundleIdentifier,
+               try library?.markSelfInstallationAwaitingRelaunch(id: recordID) == true {
+                throw SelfInstallationAwaitingVerification()
+            }
             installSucceeded = true
             installProgress = 1
             if let recordID, managedIdentity?.signingBundleID != Bundle.main.bundleIdentifier {
                 do { try library?.confirmInstallation(id: recordID) }
                 catch { self.error = "安装已完成，但保存应用记录失败：" + safeMessage(error) }
             }
+        } catch is SelfInstallationAwaitingVerification {
+            throw SelfInstallationAwaitingVerification()
         } catch {
+            if !Task.isCancelled, generation == operation,
+               let recordID, managedIdentity?.signingBundleID == Bundle.main.bundleIdentifier,
+               InstallationFailure.isResultConnectionClosed(error),
+               try library?.markSelfInstallationAwaitingRelaunch(id: recordID) == true {
+                throw SelfInstallationAwaitingVerification()
+            }
             if let recordID {
                 try? library?.fail(id: recordID, message: safeMessage(error),
                     preservePending: managedIdentity?.signingBundleID == Bundle.main.bundleIdentifier)
@@ -375,7 +391,10 @@ final class SigningViewModel: ObservableObject {
     var busy: Bool {
         isSigning || isImporting || isInstalling || isProvisioning || isPreparingIdentifier || isOneClickInstalling || settings?.operationID != nil
     }
-    var canInstall: Bool { ipaURL != nil && pairingData != nil && !busy }
+    var awaitingSelfVerification: Bool {
+        library?.selfInstallationNeedsRelaunch(bundleID: Bundle.main.bundleIdentifier) == true
+    }
+    var canInstall: Bool { ipaURL != nil && pairingData != nil && !busy && !awaitingSelfVerification }
 
     var canSign: Bool {
         ipaURL != nil && identityData != nil && profile != nil && !busy
@@ -446,6 +465,7 @@ final class SigningViewModel: ObservableObject {
 
     func installSignedIPA() async {
         guard !busy, let outputURL, let pairingData else { return }
+        guard !awaitingSelfVerification else { stage = SelfInstallationAwaitingVerification.message; return }
         let host = deviceHost.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty else { error = "请输入手机上的本地 VPN 地址"; return }
         let lock = settings?.beginOperation()
@@ -460,6 +480,8 @@ final class SigningViewModel: ObservableObject {
         do {
             try await upload(outputURL, host: host, pairing: pairingData, operation: operation)
             stage = "安装完成"
+        } catch is SelfInstallationAwaitingVerification {
+            if generation == operation { self.error = nil; stage = SelfInstallationAwaitingVerification.message }
         } catch { if generation == operation { self.error = safeMessage(error) } }
     }
 

@@ -33,7 +33,7 @@ struct SigningView: View {
                         else { startInstallation() }
                     } label: {
                         Label(model.selfRenewalProfile == nil ? "一键安装" : "续签并更新 LocSign", systemImage: "arrow.down.app.fill").font(.headline)
-                    }.disabled(busy || model.ipaName == "未选择")
+                    }.disabled(busy || model.ipaName == "未选择" || model.awaitingSelfVerification)
                 } footer: {
                     if let profile = model.selfRenewalProfile {
                         Text("选择 LocSign IPA，将使用当前标识 \(profile.bundleID) 和原团队更新自身。安装期间 App 会退出，重新打开后核对新的到期时间。请保持手机解锁、LocalDevVPN 开启。")
@@ -46,6 +46,11 @@ struct SigningView: View {
                 }
                 if model.isSigning {
                     Section { HStack { ProgressView(); Text("正在签名 IPA…") } }
+                }
+                if model.awaitingSelfVerification {
+                    Section("安装结果待核验") {
+                        Text(SelfInstallationAwaitingVerification.message).foregroundStyle(.orange)
+                    }
                 }
                 if operation != nil {
                     Section("安装进度") {
@@ -89,7 +94,7 @@ struct SigningView: View {
                         }
                         ShareLink(item: output) { Label("保存或分享 IPA", systemImage: "square.and.arrow.up") }
                             .disabled(busy)
-                        if !model.installSucceeded {
+                        if !model.installSucceeded && !model.awaitingSelfVerification {
                             Button("安装此签名文件") { startSignedInstallation() }.disabled(busy || settings.pairing == nil)
                         }
                         Button("清除本次产物", role: .destructive) { model.discardOutput() }.disabled(busy)

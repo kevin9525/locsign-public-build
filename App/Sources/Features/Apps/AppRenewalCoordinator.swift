@@ -69,11 +69,20 @@ final class AppRenewalCoordinator: ObservableObject {
             for id in ids {
                 if Task.isCancelled { return false }
                 guard let app = library.apps.first(where: { $0.id == id }) else { continue }
+                if app.identity.signingBundleID == runningBundleID,
+                   library.selfInstallationNeedsRelaunch(bundleID: runningBundleID) {
+                    stage = SelfInstallationAwaitingVerification.message
+                    succeeded = false
+                    continue
+                }
                 if automatic && (!enabled || !AppRenewalPolicy.due(app, now: now(), runningBundleID: runningBundleID)) { continue }
                 do {
                     try library.recordAttempt(id: id, now: now())
                     try await renewApp(app, automatic: automatic, minimumProfileExpiry: minimumProfileExpiry)
                     stage = app.identity.signingBundleID == runningBundleID ? "等待重新打开 LocSign 核对自身续签" : "\(app.name) 续签完成"
+                } catch is SelfInstallationAwaitingVerification {
+                    succeeded = false
+                    stage = SelfInstallationAwaitingVerification.message
                 } catch {
                     succeeded = false
                     if error as? ProvisioningError == .invalidAccount { account.requireLogin() }
@@ -149,12 +158,22 @@ final class AppRenewalCoordinator: ObservableObject {
         let id = try await library.prepare(source: source, name: app.name, identity: app.identity, material: material)
         try Task.checkCancellation()
         stage = "\(app.name)：上传并安装…"
-        try await installer.install(ipaURL: output, host: settings.host, pairingData: pairing) { [weak self] value in
-            await MainActor.run { self?.progress = value }
+        do {
+            try await installer.install(ipaURL: output, host: settings.host, pairingData: pairing) { [weak self] value in
+                await MainActor.run { self?.progress = value }
+            }
+        } catch {
+            if !Task.isCancelled, app.identity.signingBundleID == runningBundleID,
+               InstallationFailure.isResultConnectionClosed(error),
+               try library.markSelfInstallationAwaitingRelaunch(id: id) {
+                throw SelfInstallationAwaitingVerification()
+            }
+            throw error
         }
         try Task.checkCancellation()
         do {
             if app.identity.signingBundleID != runningBundleID { try library.confirmInstallation(id: id, now: now()) }
+            else { _ = try library.markSelfInstallationAwaitingRelaunch(id: id) }
         }
         catch { throw LocSignError.install("设备安装已完成，但记录未保存。请重新打开应用后检查：" + error.localizedDescription) }
         progress = 1

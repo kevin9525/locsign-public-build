@@ -21,6 +21,18 @@ enum InstallationStep: String {
 
 enum InstallationFailure {
     static let domain = "LocSign.Installation"
+    private static let stepKey = "LocSignInstallationStep"
+
+    static func isResultConnectionClosed(_ error: Error) -> Bool {
+        let failure = error as NSError
+        guard failure.domain == domain,
+              failure.userInfo[stepKey] as? String == InstallationStep.waitForResult.rawValue,
+              let cause = failure.userInfo[NSUnderlyingErrorKey] as? NSError,
+              cause.domain == "LocSign.DeviceSocket" else { return false }
+        // SecureTransport closed gracefully / abortively. A trust error,
+        // server rejection or a failure to submit the request is not this case.
+        return cause.code == -9805 || cause.code == -9806
+    }
 
     static func wrapping(_ error: Error, at step: InstallationStep) -> Error {
         if error is CancellationError || Task.isCancelled { return CancellationError() }
@@ -30,7 +42,12 @@ enum InstallationFailure {
         if cause.domain == domain { return error }
         return NSError(domain: domain, code: cause.code, userInfo: [
             NSLocalizedDescriptionKey: "\(step.rawValue)失败：\(cause.localizedDescription)",
+            stepKey: step.rawValue,
             NSUnderlyingErrorKey: cause
         ])
     }
+}
+
+struct SelfInstallationAwaitingVerification: Error {
+    static let message = "安装结果待核验。请从多任务界面完全关闭 LocSign，再重新打开；核验前保留原有效期，请勿重复续签。"
 }

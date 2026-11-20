@@ -17,6 +17,7 @@ struct ManagedApp: Codable, Identifiable, Equatable, Sendable {
         let profileSHA256: String
         let attemptedLaunchID: UUID
         let replacesCurrentProfile: Bool
+        var awaitingRelaunchVerification: Bool? = nil
     }
     let id: UUID
     var name: String
@@ -151,6 +152,25 @@ final class ManagedAppLibrary: ObservableObject {
         // Self replacement can terminate the client before a response arrives.
         rows[index].lastError = String(ProvisioningRedaction.redact(message).prefix(1500))
         try commit(rows)
+    }
+
+    func markSelfInstallationAwaitingRelaunch(id: UUID) throws -> Bool {
+        guard let index = apps.firstIndex(where: { $0.id == id }),
+              let runningBundleID, apps[index].identity.signingBundleID == runningBundleID,
+              apps[index].pending?.attemptedLaunchID == launchID else { return false }
+        var rows = apps
+        rows[index].pending?.awaitingRelaunchVerification = true
+        rows[index].lastError = nil
+        try commit(rows)
+        return true
+    }
+
+    func selfInstallationNeedsRelaunch(bundleID: String?) -> Bool {
+        guard let bundleID, bundleID == runningBundleID else { return false }
+        return apps.contains {
+            $0.identity.signingBundleID == bundleID && $0.pending?.attemptedLaunchID == launchID
+                && $0.pending?.awaitingRelaunchVerification == true
+        }
     }
 
     func recordAttempt(id: UUID, now: Date) throws {

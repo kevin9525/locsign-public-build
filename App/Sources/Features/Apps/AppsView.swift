@@ -61,7 +61,13 @@ struct AppsView: View {
                                     Text(expiry, format: .dateTime.year().month().day().hour().minute())
                                 }.font(.subheadline).foregroundStyle(expiry <= Date() ? .red : .secondary)
                             } else { Text("安装结果待确认").foregroundStyle(.orange) }
-                            if app.pending != nil { Text("上次安装尚未确认，原到期时间保持不变").font(.caption).foregroundStyle(.orange) }
+                            if app.pending?.awaitingRelaunchVerification == true {
+                                Text(library.selfInstallationNeedsRelaunch(bundleID: app.identity.signingBundleID)
+                                     ? SelfInstallationAwaitingVerification.message
+                                     : "重新打开后尚未确认本次更新，原有效期仍保留。可检查连接后重试。").font(.caption).foregroundStyle(.orange)
+                            } else if app.pending != nil {
+                                Text("上次安装尚未确认，原到期时间保持不变").font(.caption).foregroundStyle(.orange)
+                            }
                             if let lastError = app.lastError { Text(lastError).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
                             if app.identity.signingBundleID == Bundle.main.bundleIdentifier {
                                 Text("LocSign 自身请手动续签，安装时应用会退出。").font(.caption).foregroundStyle(.secondary)
@@ -76,7 +82,9 @@ struct AppsView: View {
                                     if app.identity.signingBundleID == Bundle.main.bundleIdentifier { selfRenewal = app }
                                     else { renew(app) }
                                 }.buttonStyle(.borderedProminent)
+                                    .disabled(library.selfInstallationNeedsRelaunch(bundleID: app.identity.signingBundleID))
                                 Button("清除记录", role: .destructive) { removal = app }.buttonStyle(.bordered)
+                                    .disabled(library.selfInstallationNeedsRelaunch(bundleID: app.identity.signingBundleID))
                             }.disabled(busy)
                         }.padding(.vertical, 5)
                     }

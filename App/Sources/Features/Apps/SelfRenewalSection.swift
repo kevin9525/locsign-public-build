@@ -22,6 +22,7 @@ struct SelfRenewalSection: View {
     var body: some View {
         Section {
             if let profile = model.profile {
+                let needsRelaunch = library.selfInstallationNeedsRelaunch(bundleID: profile.bundleID)
                 LabeledContent("当前应用标识", value: profile.bundleID)
                     .font(.caption).textSelection(.enabled)
                 LabeledContent("描述文件到期") {
@@ -36,13 +37,16 @@ struct SelfRenewalSection: View {
                     Task { await model.setRemindersEnabled(enabled) }
                 }))
                 if let app = managedSelf {
-                    Button("立即续签 LocSign") { renew(app) }.disabled(busy)
+                    Button("立即续签 LocSign") { renew(app) }.disabled(busy || needsRelaunch)
                 } else {
                     Text("尚未找到可用的自身 IPA 记录。首次选择 LocSign IPA 更新一次，之后即可直接续签。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Button(managedSelf == nil ? "选择 LocSign IPA 并续签" : "更换 LocSign IPA 并更新") { importProfile = profile }
-                    .disabled(busy)
+                    .disabled(busy || needsRelaunch)
+                if needsRelaunch {
+                    Text(SelfInstallationAwaitingVerification.message).font(.footnote).foregroundStyle(.orange)
+                }
             } else {
                 Text(model.profileError ?? "正在读取当前安装的描述文件…")
                     .font(.footnote).foregroundStyle(.secondary)
