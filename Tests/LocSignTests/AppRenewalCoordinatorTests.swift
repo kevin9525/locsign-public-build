@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 @testable import LocSign
 
 @MainActor
@@ -154,6 +155,58 @@ final class AppRenewalCoordinatorTests: XCTestCase {
         XCTAssertFalse(fixture.account.awaitingCode)
         XCTAssertEqual(fixture.library.apps.first?.profileExpiry, previous)
         XCTAssertNotNil(fixture.library.apps.first?.lastError)
+    }
+
+    func testManualRenewalWaitsForExplicitCertificateDecisionBeforeSigning() async throws {
+        for approve in [false, true] {
+            let fixture = try await setup(mode: .revocation)
+            let original = try XCTUnwrap(fixture.library.apps.first)
+            let task = Task { await fixture.coordinator.renew(id: original.id) }
+            // Observe the model that drives the confirmation UI, not a mock call.
+            let shown = expectation(description: "Manual certificate decision is visible")
+            let observation = fixture.account.$revocations.dropFirst().sink { candidates in
+                if !candidates.isEmpty { shown.fulfill() }
+            }
+            await fulfillment(of: [shown], timeout: 3)
+            XCTAssertEqual(fixture.account.revocations.map(\.id), ["certificate"])
+            XCTAssertTrue(fixture.signer.inputs.isEmpty)
+            let beforeDecision = await fixture.installer.uploads
+            XCTAssertTrue(beforeDecision.isEmpty)
+            fixture.account.resolveRevocation(approve)
+            let result = await task.value
+            XCTAssertEqual(result, approve)
+            let responses = await fixture.engine.revocationResponses
+            let uploads = await fixture.installer.uploads
+            XCTAssertEqual(responses, [approve])
+            XCTAssertEqual(uploads.count, approve ? 1 : 0)
+            XCTAssertEqual(fixture.library.apps.first?.profileExpiry,
+                           approve ? date.addingTimeInterval(7 * 86400) : original.profileExpiry)
+            XCTAssertTrue(fixture.account.revocations.isEmpty)
+            XCTAssertNil(fixture.settings.operationID)
+            observation.cancel()
+        }
+    }
+
+    func testCancelWhileManualCertificatePromptIsOpenPreservesOriginalMaterial() async throws {
+        let fixture = try await setup(mode: .revocation)
+        let original = try XCTUnwrap(fixture.library.apps.first)
+        let shown = expectation(description: "Manual certificate prompt is open")
+        let observation = fixture.account.$revocations.dropFirst().sink { if !$0.isEmpty { shown.fulfill() } }
+        let task = Task { await fixture.coordinator.renew(id: original.id) }
+        await fulfillment(of: [shown], timeout: 3)
+        fixture.coordinator.cancel()
+        let result = await task.value
+        XCTAssertFalse(result)
+        // A stale confirmation cannot restart a cancelled operation.
+        fixture.account.resolveRevocation(true)
+        XCTAssertTrue(fixture.account.revocations.isEmpty)
+        XCTAssertTrue(fixture.signer.inputs.isEmpty)
+        let uploads = await fixture.installer.uploads
+        XCTAssertTrue(uploads.isEmpty)
+        XCTAssertEqual(fixture.library.apps.first?.profileExpiry, original.profileExpiry)
+        XCTAssertEqual(try Data(contentsOf: fixture.library.sourceURL(for: original.id)), Data("original IPA 0".utf8))
+        XCTAssertNil(fixture.settings.operationID)
+        observation.cancel()
     }
 
     func testSharedDeviceOperationLockRejectsOverlapAndIsReleasedAfterRenewal() async throws {
