@@ -44,7 +44,18 @@ The implemented guard now snapshots and invalidates manual eligibility, checks
 it before and after awaiting a decision, and declines pending decisions when
 their tab/foreground owner is lost.
 
-Full green CI and follow-up independent review pending.
+Final source `0293e46fba848d2793c362c3c7616f9bedfbadb6` passed CI run
+`44683633102`, job `136112718089`: 444 XCTest tests, 16 native transport tests,
+and eight packaging tests. Simulator and unsigned-device builds passed.
+Follow-up independent review confirmed the P2 finding is resolved with no new
+actionable findings. Existing upstream Rust unused-code warnings remain.
 
-Target 0.4.9 (28). Actual device confirmation UI and self-renewal acceptance must
+Delivered artifact `14605753817` as `LocSign-0.4.9-build28-unsigned.ipa`,
+24,899,809 bytes, SHA256
+`0314346c304cb12318835ef5302eb3b10c3da847b210a347e5336e4dc9813baa`.
+Version/build, archive CRC, arm64, URL/background configuration, trust anchors,
+licenses and developer-image hashes verified. USB staging found no unique USB
+iPhone; Apple Mobile Device Service was running. No phone file was transferred.
+
+Delivered 0.4.9 (28). Actual device confirmation UI and self-renewal acceptance must
 still be checked after cover-update; no successful end-to-end renewal is claimed.
