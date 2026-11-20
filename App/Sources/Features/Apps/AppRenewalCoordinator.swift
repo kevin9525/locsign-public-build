@@ -11,6 +11,7 @@ final class AppRenewalCoordinator: ObservableObject {
         didSet { settings.defaults.set(enabled, forKey: "renewal.enabled"); if !enabled { cancel() } }
     }
     var notifyFailure: (@MainActor (String) async -> Void)?
+    var manualConfirmationAvailable = false
     private let settings: InstallationSettings
     private let library: ManagedAppLibrary
     private let account: AppleIDProvisioningModel

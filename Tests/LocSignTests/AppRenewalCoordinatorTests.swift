@@ -209,6 +209,75 @@ final class AppRenewalCoordinatorTests: XCTestCase {
         observation.cancel()
     }
 
+    func testLateQuotaAfterLeavingAndReturningCannotOpenAnOrphanedManualPrompt() async throws {
+        let fixture = try await setup(mode: .delayedRevocation)
+        let original = try XCTUnwrap(fixture.library.apps.first)
+        var showedPrompt = false
+        let observation = fixture.account.$revocations.sink { if !$0.isEmpty { showedPrompt = true } }
+        let finished = expectation(description: "Late quota ends without waiting for an invisible decision")
+        let task = Task {
+            let result = await fixture.coordinator.renew(id: original.id)
+            finished.fulfill()
+            return result
+        }
+        await fulfillment(of: [fixture.engine.provisionStarted], timeout: 3)
+        fixture.coordinator.manualConfirmationAvailable = false
+        fixture.coordinator.manualConfirmationAvailable = true
+        await fixture.engine.releaseQuota()
+        await fulfillment(of: [finished], timeout: 3)
+        task.cancel() // Clean up even if the regression leaves a continuation waiting.
+        let result = await task.value
+        XCTAssertFalse(result)
+        XCTAssertFalse(showedPrompt)
+        XCTAssertTrue(fixture.account.revocations.isEmpty)
+        XCTAssertTrue(fixture.signer.inputs.isEmpty)
+        let uploads = await fixture.installer.uploads
+        XCTAssertTrue(uploads.isEmpty)
+        XCTAssertEqual(fixture.library.apps.first?.profileExpiry, original.profileExpiry)
+        XCTAssertNil(fixture.settings.operationID)
+        observation.cancel()
+    }
+
+    func testLosingManualPresentationWhilePromptIsOpenRejectsAndReleasesLock() async throws {
+        let fixture = try await setup(mode: .revocation)
+        let original = try XCTUnwrap(fixture.library.apps.first)
+        let shown = expectation(description: "Manual prompt opened")
+        let observation = fixture.account.$revocations.dropFirst().sink { if !$0.isEmpty { shown.fulfill() } }
+        let finished = expectation(description: "Losing the owning tab or foreground ends the decision")
+        let task = Task {
+            let result = await fixture.coordinator.renew(id: original.id)
+            finished.fulfill()
+            return result
+        }
+        await fulfillment(of: [shown], timeout: 3)
+        fixture.coordinator.manualConfirmationAvailable = false
+        await fulfillment(of: [finished], timeout: 3)
+        task.cancel()
+        let result = await task.value
+        fixture.coordinator.manualConfirmationAvailable = true
+        fixture.account.resolveRevocation(true)
+        XCTAssertFalse(result)
+        XCTAssertTrue(fixture.account.revocations.isEmpty)
+        XCTAssertTrue(fixture.signer.inputs.isEmpty)
+        let uploads = await fixture.installer.uploads
+        XCTAssertTrue(uploads.isEmpty)
+        XCTAssertEqual(fixture.library.apps.first?.profileExpiry, original.profileExpiry)
+        XCTAssertNil(fixture.settings.operationID)
+        observation.cancel()
+    }
+
+    func testLosingManualPresentationDoesNotCancelAutomaticRenewal() async throws {
+        let fixture = try await setup(delayedInstall: true)
+        let task = Task { await fixture.coordinator.runDue() }
+        await fulfillment(of: [fixture.installer.started], timeout: 3)
+        fixture.coordinator.manualConfirmationAvailable = false
+        await fixture.installer.release()
+        let result = await task.value
+        XCTAssertTrue(result)
+        XCTAssertEqual(fixture.library.apps.first?.profileExpiry, date.addingTimeInterval(7 * 86400))
+        XCTAssertNil(fixture.settings.operationID)
+    }
+
     func testSharedDeviceOperationLockRejectsOverlapAndIsReleasedAfterRenewal() async throws {
         let fixture = try await setup(delayedInstall: true)
         let occupied = try XCTUnwrap(fixture.settings.beginOperation())
@@ -369,6 +438,7 @@ final class AppRenewalCoordinatorTests: XCTestCase {
         let coordinator = AppRenewalCoordinator(settings: settings, library: library, account: account,
             installer: installer, probe: probe, runningBundleID: runningBundleID, now: { clock.date },
             inspect: { _ in .init(bundleID: "org.example.original", name: "Original") }, sign: signer.sign)
+        coordinator.manualConfirmationAvailable = true
         return Fixture(coordinator: coordinator, settings: settings, library: library, folder: folder, account: account,
             engine: engine, probe: probe, installer: installer, signer: signer, clock: clock, runningBundleID: runningBundleID)
     }
@@ -404,7 +474,9 @@ private actor RenewalDeviceFixture: PairedDeviceProbing {
 }
 
 private actor RenewalEngineFixture: ProvisioningEngine {
-    enum Mode: Sendable, Equatable { case cached, revocation }
+    enum Mode: Sendable, Equatable { case cached, revocation, delayedRevocation }
+    nonisolated let provisionStarted = XCTestExpectation(description: "Waiting for remote certificate quota")
+    private var quotaContinuation: CheckedContinuation<Void, Never>?
     let account: ProvisioningAccount
     let mode: Mode
     let profileExpiry: Date
@@ -419,6 +491,7 @@ private actor RenewalEngineFixture: ProvisioningEngine {
     func restoreAccount() async throws -> ProvisioningAccount? { account }
     func restoreSigningAccount() async throws -> ProvisioningAccount? { account }
     func cancel() async {}
+    func releaseQuota() { quotaContinuation?.resume(); quotaContinuation = nil }
     func logout(account: String) async throws {}
     func cachedMaterial(request: ProvisioningRequest) async throws -> ProvisioningMaterial? {
         cachedRequests.append(request)
@@ -428,6 +501,9 @@ private actor RenewalEngineFixture: ProvisioningEngine {
     }
     func provision(request: ProvisioningRequest, confirmRevocation: @escaping @Sendable ([CertificateRevocation]) async -> Bool) async throws -> ProvisioningMaterial {
         provisionRequests.append(request)
+        if mode == .delayedRevocation {
+            await withCheckedContinuation { quotaContinuation = $0; provisionStarted.fulfill() }
+        }
         let confirmed = await confirmRevocation([.init(id: "certificate", serialNumber: "01", name: "Synthetic", expiry: certificateExpiry)])
         revocationResponses.append(confirmed)
         guard confirmed else { throw ProvisioningError.revocationDeclined }
