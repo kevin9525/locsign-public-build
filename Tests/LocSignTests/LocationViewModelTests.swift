@@ -5,6 +5,43 @@ import CoreLocation
 
 @MainActor
 final class LocationViewModelTests: XCTestCase {
+    func testSuccessfulApplyPersistsOriginalCoordinatesAndSystemInRecentHistory() async throws {
+        let fixture = try setup()
+        fixture.model.selectSearchCoordinate(.init(latitude: 31.839047, longitude: 118.815859), countryCode: "CN")
+        await perform(fixture.model) { fixture.model.apply() }
+        await perform(fixture.model) { fixture.model.apply() }
+        let data = try XCTUnwrap(fixture.settings.defaults.data(forKey: "location.savedPlaces.v1"))
+        let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let recent = try XCTUnwrap(saved["recents"] as? [[String: Any]])
+        XCTAssertEqual(recent.count, 1, "Repeated applications must update one place rather than fill the history")
+        let place = try XCTUnwrap(recent.first)
+        XCTAssertEqual(try XCTUnwrap(place["latitude"] as? Double), 31.839047, accuracy: 0.0000001)
+        XCTAssertEqual(try XCTUnwrap(place["longitude"] as? Double), 118.815859, accuracy: 0.0000001)
+        XCTAssertEqual(place["coordinateSystem"] as? String, "gcj02", "History must retain input coordinates, not relabel converted GPS values")
+        XCTAssertEqual(place["mapRegion"] as? String, "mainlandChina")
+        XCTAssertEqual(try XCTUnwrap(fixture.controller.setRequests.last?.coordinate.latitude), 31.841097105, accuracy: 0.00000001)
+    }
+
+    func testRecentHistoryKeepsTwentyLatestPlacesAndExcludesFailedApplyAndRestore() async throws {
+        let fixture = try setup()
+        for offset in 0..<22 {
+            fixture.model.latitude = String(30 + Double(offset) / 100)
+            fixture.model.longitude = "120"
+            await perform(fixture.model) { fixture.model.apply() }
+        }
+        let data = try XCTUnwrap(fixture.settings.defaults.data(forKey: "location.savedPlaces.v1"))
+        let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let recent = try XCTUnwrap(saved["recents"] as? [[String: Any]])
+        XCTAssertEqual(recent.count, 20)
+        XCTAssertEqual(try XCTUnwrap(recent.first?["latitude"] as? Double), 30.21, accuracy: 0.0000001)
+        XCTAssertEqual(try XCTUnwrap(recent.last?["latitude"] as? Double), 30.02, accuracy: 0.0000001)
+        await perform(fixture.model) { fixture.model.restore() }
+        fixture.controller.setError = URLError(.cannotConnectToHost)
+        fixture.model.latitude = "40"
+        await perform(fixture.model) { fixture.model.apply() }
+        XCTAssertEqual(fixture.settings.defaults.data(forKey: "location.savedPlaces.v1"), data)
+    }
+
     func testRememberedAssistedModeRoutesMainApplyAndRestoreAfterRelaunch() async throws {
         let fixture = try setup()
         var events: [String] = []
@@ -421,6 +458,7 @@ private final class LocationControllerFixture: DeviceLocationControlling {
     var onSessionFailure: (@Sendable (String) -> Void)?
     let setStarted = XCTestExpectation(description: "Location set entered controller")
     var clearError: (any Error)?
+    var setError: (any Error)?
     private(set) var setRequests: [SetRequest] = []
     private(set) var clearCalls = 0
     private let delayedSet: Bool
@@ -435,6 +473,7 @@ private final class LocationControllerFixture: DeviceLocationControlling {
         setContinuation = nil
     }
     func set(_ coordinate: LocationCoordinate, host: String, pairingData: Data) async throws {
+        if let setError { throw setError }
         setRequests.append(.init(coordinate: coordinate, host: host, pairingData: pairingData))
         if delayedSet && !setReleased {
             await withCheckedContinuation { continuation in
