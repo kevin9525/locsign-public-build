@@ -41,4 +41,28 @@ pending status in both entry points. It accepts only the DeviceSocket domain's
 TLS closure codes -9805/-9806 at waitForResult. The journal flag is scoped to
 the running bundle and attempt launch; after restart, unmatched attempts remain
 visible but do not block deliberate retry. UI never labels this status success.
-Final green tests, review and artifact results pending.
+Code review found two target-identity edge cases: a global pending guard could
+block ordinary app signing, and manual signing could retain an original bundle
+identifier different from the automatic personal identifier. The final guard
+uses the selected effective target and records the actual signed output identity.
+Manual output reads the unique top-level Info.plist with a bounded extraction;
+automatic output uses the provisioned identity. Clearing output clears its
+identity. Shared-library and real manual-signing regression tests cover both
+self and ordinary app targets with differing personal-identifier settings.
+
+Follow-up review of e1aab3d found both issues resolved and no remaining important
+findings. CI run 44700663270 for exact source
+e1aab3ded34022dfaabc557fb1dad7480a38e346 completed successfully: 450 XCTest,
+16 native service tests and 8 packaging tests passed, with successful simulator
+and unsigned device builds. The private product/test/version files were checked
+against that exact source before delivery.
+
+Artifact 14613477966 was downloaded and verified for ZIP integrity, version
+0.4.10/build29, arm64 executable, unsigned packaging, callback/background settings,
+trust roots, licenses and the expected DDI resource hashes. The delivered IPA is
+24,920,284 bytes, SHA256
+b5f9953d7ed4b9d3413ebe36c650ac534173045d4e2349602f239659dada5b63.
+It is saved in the user's top-level deliverables directory. USB staging was
+attempted after verification, but no USB-connected iPhone was available then.
+The new build's physical-device UI remains unverified; build28 device evidence
+above does not substitute for build29 acceptance.
