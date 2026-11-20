@@ -37,24 +37,34 @@ final class ApplicationServices: ObservableObject {
 
 @main
 struct LocSignApp: App {
+    private enum Tab: Hashable { case installation, apps, location, connection }
     @StateObject private var services = ApplicationServices()
+    @State private var selectedTab: Tab = .installation
     @Environment(\.scenePhase) private var phase
     var body: some Scene {
         WindowGroup {
-            TabView {
+            TabView(selection: $selectedTab) {
                 SigningView(settings: services.installation, model: services.signing, account: services.account)
                     .tabItem { Label("安装", systemImage: "signature") }
+                    .tag(Tab.installation)
                 AppsView(library: services.library, renewal: services.renewal, settings: services.installation,
                     account: services.account, ownRenewal: services.ownRenewal, background: services.background)
                     .tabItem { Label("App", systemImage: "square.grid.2x2") }
+                    .tag(Tab.apps)
                 LocationView(model: services.location, settings: services.installation)
                     .tabItem { Label("定位", systemImage: "mappin.and.ellipse") }
+                    .tag(Tab.location)
                 ConnectionView(settings: services.installation)
                     .tabItem { Label("连接", systemImage: "cable.connector") }
+                    .tag(Tab.connection)
+            }
+            .onChange(of: selectedTab, initial: true) { _, tab in
+                services.renewal.manualConfirmationAvailable = tab == .apps && phase == .active
             }
             .task { await services.activate() }
             .onOpenURL { services.location.handleURL($0) }
             .onChange(of: phase) { _, value in
+                services.renewal.manualConfirmationAvailable = selectedTab == .apps && value == .active
                 if value == .active { Task { await services.activate() } }
                 else if value == .background {
                     services.location.markBackground()

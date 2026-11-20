@@ -11,7 +11,18 @@ final class AppRenewalCoordinator: ObservableObject {
         didSet { settings.defaults.set(enabled, forKey: "renewal.enabled"); if !enabled { cancel() } }
     }
     var notifyFailure: (@MainActor (String) async -> Void)?
-    var manualConfirmationAvailable = false
+    // Driven by the selected tab and scene, never by sheet disappearance.
+    var manualConfirmationAvailable = false {
+        didSet {
+            guard !manualConfirmationAvailable, manualRunCanConfirm != nil else { return }
+            // Returning to the tab must not revive a decision from this run.
+            manualRunCanConfirm = false
+            if !account.revocations.isEmpty {
+                cancel()
+                account.resolveRevocation(false)
+            }
+        }
+    }
     private let settings: InstallationSettings
     private let library: ManagedAppLibrary
     private let account: AppleIDProvisioningModel
@@ -22,6 +33,7 @@ final class AppRenewalCoordinator: ObservableObject {
     private let now: () -> Date
     private let runningBundleID: String?
     private var operation: Task<Bool, Never>?
+    private var manualRunCanConfirm: Bool?
 
     init(settings: InstallationSettings, library: ManagedAppLibrary, account: AppleIDProvisioningModel,
          installer: any IPAInstalling = InstallCoordinator(), probe: any PairedDeviceProbing = ProvisioningDeviceProbe(),
@@ -50,6 +62,7 @@ final class AppRenewalCoordinator: ObservableObject {
         guard !isRunning, settings.operationID == nil, !account.isBusy else { return false }
         guard !ids.isEmpty else { return true }
         guard let token = settings.beginOperation() else { return false }
+        manualRunCanConfirm = automatic ? nil : manualConfirmationAvailable
         isRunning = true; error = nil; progress = 0
         let task = Task { @MainActor in
             var succeeded = true
@@ -76,8 +89,14 @@ final class AppRenewalCoordinator: ObservableObject {
         }
         operation = task
         let result = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
-        operation = nil; isRunning = false; settings.endOperation(token)
+        operation = nil; manualRunCanConfirm = nil; isRunning = false; settings.endOperation(token)
         return result
+    }
+
+    private func confirmManualRevocation(_ candidates: [CertificateRevocation]) async -> Bool {
+        guard manualRunCanConfirm == true, !Task.isCancelled else { return false }
+        let confirmed = await account.confirmRevocation(candidates)
+        return confirmed && manualRunCanConfirm == true && !Task.isCancelled
     }
 
     private func renewApp(_ app: ManagedApp, automatic: Bool, minimumProfileExpiry: Date?) async throws {
@@ -113,9 +132,9 @@ final class AppRenewalCoordinator: ObservableObject {
             }
             // Unattended work must preserve certificates. Manual renewal uses
             // the same explicit decision model as the installation flow.
-            material = try await engine.provision(request: request, confirmRevocation: { [account] candidates in
+            material = try await engine.provision(request: request, confirmRevocation: { [self] candidates in
                 guard !automatic, !Task.isCancelled else { return false }
-                return await account.confirmRevocation(candidates)
+                return await confirmManualRevocation(candidates)
             })
         }
         try Task.checkCancellation()

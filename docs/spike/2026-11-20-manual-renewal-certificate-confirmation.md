@@ -25,7 +25,26 @@ Tests-only baseline `b76c14df04296a13c5b080f5d1590cdec0db52f3`, run `44677384698
 failed the two new manual decision tests with nine assertions: the visible
 candidate list never appeared and approval could not proceed. All previous 439
 tests passed. Regression cases cover approve, decline, cancelling while waiting,
-and unchanged unattended refusal. Full green CI and independent review pending.
+and unchanged unattended refusal.
+
+Independent review found that observing only AppsView disappearance while a
+prompt already exists misses a quota response arriving after a tab switch.
+The follow-up design uses selected-tab and scene state from LocSignApp, not
+sheet/presenter disappearance. Each manual run snapshots presentation eligibility;
+leaving the tab or foreground invalidates that run's right to prompt, even if the
+user returns before the response. A pending decision is cancelled and declined;
+automatic renewal and the separate installation flow retain their ownership.
+No-quota renewal can continue as before. Tests exercise delayed quota after
+leave/return, pending-prompt ownership loss, and an unaffected automatic run.
+The failing-test baseline b72c619 has only an inert eligibility field. Its run
+44681292642 executed 444 tests; the two new ownership-loss tests failed with
+three assertions (two unfinished waits and an orphaned prompt). The other 442
+tests passed, including manual approval/decline and unaffected automatic renewal.
+The implemented guard now snapshots and invalidates manual eligibility, checks
+it before and after awaiting a decision, and declines pending decisions when
+their tab/foreground owner is lost.
+
+Full green CI and follow-up independent review pending.
 
 Target 0.4.9 (28). Actual device confirmation UI and self-renewal acceptance must
 still be checked after cover-update; no successful end-to-end renewal is claimed.

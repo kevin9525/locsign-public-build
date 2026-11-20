@@ -13,7 +13,6 @@ struct AppsView: View {
     @State private var removal: ManagedApp?
     @State private var selfRenewal: ManagedApp?
     @State private var operation: Task<Void, Never>?
-    @Environment(\.scenePhase) private var scenePhase
 
     private var busy: Bool { settings.operationID != nil || account.isBusy || renewal.isRunning || loading }
 
@@ -111,25 +110,6 @@ struct AppsView: View {
                 set: { if !$0 && renewal.isRunning { account.resolveRevocation(false) } }
             )) {
                 RenewalCertificateDecisionView(account: account)
-            }
-            .onChange(of: scenePhase) { _, phase in
-                if phase != .active && renewal.isRunning && !account.revocations.isEmpty {
-                    renewal.cancel()
-                    account.resolveRevocation(false)
-                }
-            }
-            .onChange(of: account.revocations.isEmpty) { _, empty in
-                // A remote quota response can arrive after the app backgrounded.
-                if !empty && renewal.isRunning && scenePhase != .active {
-                    renewal.cancel()
-                    account.resolveRevocation(false)
-                }
-            }
-            .onDisappear {
-                if renewal.isRunning && !account.revocations.isEmpty {
-                    renewal.cancel()
-                    account.resolveRevocation(false)
-                }
             }
             .alert("清除本地记录与原 IPA？", isPresented: Binding(get: { removal != nil }, set: { if !$0 { removal = nil } })) {
                 Button("取消", role: .cancel) { removal = nil }
