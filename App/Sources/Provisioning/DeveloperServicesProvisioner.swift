@@ -113,6 +113,19 @@ struct DeveloperServicesProvisioner: Sendable {
                 throw ProvisioningError.unsupportedIPA("现有 App ID 包含不支持的权限，未修改远端配置")
             }
         }
+        // Extensions need their own App IDs. Read and check all of them before
+        // the first remote mutation, exactly like the main App ID.
+        var existingExtensionBundles: [String: DeveloperBundle] = [:]
+        for item in app.extensions {
+            try Task.checkCancellation()
+            guard item.bundleID.hasPrefix(app.bundleID + ".") else { throw DeveloperServicesError.invalidResponse }
+            guard let existing = try await gateway.findExactBundleID(item.bundleID) else { continue }
+            guard existing.identifier == item.bundleID,
+                  Set(existing.capabilities).isSubset(of: Self.compatibleCapabilities) else {
+                throw ProvisioningError.unsupportedIPA("扩展 \(item.name) 的现有 App ID 包含不支持的权限，未修改远端配置")
+            }
+            existingExtensionBundles[item.bundleID] = existing
+        }
         let devices = try await gateway.listDevices()
         try Task.checkCancellation()
         let device: DeveloperDevice
@@ -127,6 +140,16 @@ struct DeveloperServicesProvisioner: Sendable {
         else { bundle = try await gateway.createBundleID(app.bundleID, name: app.name) }
         guard bundle.identifier == app.bundleID,
               Set(bundle.capabilities).isSubset(of: Self.compatibleCapabilities) else { throw DeveloperServicesError.invalidResponse }
+        var extensionBundles: [(item: ProvisioningExtension, bundle: DeveloperBundle)] = []
+        for item in app.extensions {
+            try Task.checkCancellation()
+            let resolved: DeveloperBundle
+            if let existing = existingExtensionBundles[item.bundleID] { resolved = existing }
+            else { resolved = try await gateway.createBundleID(item.bundleID, name: item.name) }
+            guard resolved.identifier == item.bundleID,
+                  Set(resolved.capabilities).isSubset(of: Self.compatibleCapabilities) else { throw DeveloperServicesError.invalidResponse }
+            extensionBundles.append((item, resolved))
+        }
 
         let certificates = try await gateway.listCertificates()
         var pending = try await store.loadPending()
@@ -183,52 +206,75 @@ struct DeveloperServicesProvisioner: Sendable {
         guard let identity = pending, let certificate = reusable, let der = certificate.der,
               let pem = String(data: identity.privateKeyPEM, encoding: .utf8) else { throw DeveloperServicesError.invalidResponse }
         let validator = ProvisioningProfileValidator(trustAnchors: anchors, now: now())
-        func validate(_ profile: DeveloperProfile) throws -> ProvisioningMaterial {
-            let validated = try validator.validate(data: profile.content, expectedBundleID: app.bundleID,
+        func validate(_ profile: DeveloperProfile, bundleID: String) throws -> ValidatedProvisioningProfile {
+            let validated = try validator.validate(data: profile.content, expectedBundleID: bundleID,
                 expectedTeamID: teamID, expectedUDID: deviceUDID, expectedCertificateDER: der, privateKeyPEM: identity.privateKeyPEM)
             if let minimumProfileExpiry {
                 guard validated.expiry > minimumProfileExpiry else {
                     throw ProvisioningError.materialInvalid("描述文件有效期未延长，请稍后重试")
                 }
             }
-            return ProvisioningMaterial(privateKeyPEM: pem, profileData: validated.raw,
-                certificateExpiry: min(certificate.expiry, validated.certificateExpiry), profileExpiry: validated.expiry)
+            return validated
         }
-        for profile in try await gateway.listProfiles(bundleID: bundle.id) {
-            try Task.checkCancellation()
-            if let material = try? validate(profile) { return material }
-        }
-        try Task.checkCancellation()
-        let profile: DeveloperProfile
-        do {
-            profile = try await gateway.createDevelopmentProfile(bundleID: bundle.id, certificateID: certificate.id, deviceID: device.id)
-        } catch {
-            if Task.isCancelled || error is CancellationError { throw CancellationError() }
-            let originalError = error
-            let failure = error as? DeveloperServicesFailure
-            let reason = failure?.reason ?? (error as? DeveloperServicesError)
-            let conflict: Bool
-            switch reason {
-            case .rejected(409)?, .profileRejected(409, _)?: conflict = true
-            default: conflict = false
+        // The same reuse/create/conflict rules apply to the app and every extension.
+        func resolveProfile(bundle: DeveloperBundle, bundleID: String) async throws -> ValidatedProvisioningProfile {
+            for profile in try await gateway.listProfiles(bundleID: bundle.id) {
+                try Task.checkCancellation()
+                if let validated = try? validate(profile, bundleID: bundleID) { return validated }
             }
-            guard conflict, failure == nil || failure?.step == .createProfile else { throw error }
-            // Another request may have completed since the earlier list. Read
-            // once, validate exactly as normal, and never delete/recreate here.
+            try Task.checkCancellation()
+            let profile: DeveloperProfile
             do {
-                for candidate in try await gateway.listProfiles(bundleID: bundle.id) {
-                    try Task.checkCancellation()
-                    if let material = try? validate(candidate) { return material }
-                }
+                profile = try await gateway.createDevelopmentProfile(bundleID: bundle.id, certificateID: certificate.id, deviceID: device.id)
             } catch {
                 if Task.isCancelled || error is CancellationError { throw CancellationError() }
-                // A failed lookup must not hide the actual creation rejection.
+                let originalError = error
+                let failure = error as? DeveloperServicesFailure
+                let reason = failure?.reason ?? (error as? DeveloperServicesError)
+                let conflict: Bool
+                switch reason {
+                case .rejected(409)?, .profileRejected(409, _)?: conflict = true
+                default: conflict = false
+                }
+                guard conflict, failure == nil || failure?.step == .createProfile else { throw error }
+                // Another request may have completed since the earlier list. Read
+                // once, validate exactly as normal, and never delete/recreate here.
+                do {
+                    for candidate in try await gateway.listProfiles(bundleID: bundle.id) {
+                        try Task.checkCancellation()
+                        if let validated = try? validate(candidate, bundleID: bundleID) { return validated }
+                    }
+                } catch {
+                    if Task.isCancelled || error is CancellationError { throw CancellationError() }
+                    // A failed lookup must not hide the actual creation rejection.
+                }
+                try Task.checkCancellation()
+                throw originalError
             }
             try Task.checkCancellation()
-            throw originalError
+            return try validate(profile, bundleID: bundleID)
         }
-        try Task.checkCancellation()
-        return try validate(profile)
+        let main = try await resolveProfile(bundle: bundle, bundleID: app.bundleID)
+        var extensionProfiles: [ExtensionProfileMaterial] = []
+        var certificateExpiry = min(certificate.expiry, main.certificateExpiry)
+        var profileExpiry = main.expiry
+        for (item, extensionBundle) in extensionBundles {
+            try Task.checkCancellation()
+            let validated: ValidatedProvisioningProfile
+            do { validated = try await resolveProfile(bundle: extensionBundle, bundleID: item.bundleID) }
+            catch {
+                // Rethrow unchanged so existing classification (P00–P07 etc.) still
+                // applies; the log names the extension that failed.
+                AppLogger.log(.warn, "provision", "扩展描述文件申请失败：\(item.bundleID)")
+                throw error
+            }
+            certificateExpiry = min(certificateExpiry, validated.certificateExpiry)
+            profileExpiry = min(profileExpiry, validated.expiry)
+            extensionProfiles.append(.init(bundleID: item.bundleID, profileData: validated.raw, profileExpiry: validated.expiry))
+        }
+        return ProvisioningMaterial(privateKeyPEM: pem, profileData: main.raw,
+            certificateExpiry: certificateExpiry, profileExpiry: profileExpiry,
+            extensionProfiles: extensionProfiles.isEmpty ? nil : extensionProfiles)
     }
 
     private func issueOrRecover(_ identity: PendingSigningMaterial) async throws -> DeveloperCertificate {

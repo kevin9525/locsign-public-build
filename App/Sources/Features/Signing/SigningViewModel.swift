@@ -108,8 +108,10 @@ final class SigningViewModel: ObservableObject {
 
     static func signProvisionedMaterial(_ ipa: URL, _ material: ProvisioningMaterial) async throws -> URL {
         let profile = try ProfileParser.parse(material.profileData)
+        let extensionProfiles = try material.extensions.map { try ProfileParser.parse($0.profileData) }
         return try await SigningEngine.shared.sign(ipaURL: ipa, identity: .pem(material.privateKeyPEM), profile: profile,
-            automaticProvisioning: true, signingBundleID: material.signingBundleID)
+            automaticProvisioning: true, signingBundleID: material.signingBundleID,
+            extensionProfiles: extensionProfiles)
     }
     func suggestPersonalIdentifier(teamID: String) async {
         guard !busy,

@@ -64,7 +64,7 @@ struct AppleIDProvisioningSheet: View {
                             .disabled(busy)
                         Text("安装时会自动验证配对设备，并优先复用本机有效材料。无需手动检测或导入描述文件。")
                             .font(.footnote).foregroundStyle(.secondary)
-                        Text("仅支持无扩展、未加密的单一 arm64 App。默认保留原 Bundle ID；原标识不可用时可选用个人签名标识。免费描述文件通常约 7 天，实际到期日以 Apple 返回并验证的材料为准。")
+                        Text("支持未加密的单一 arm64 App 及其 PlugIns 中的扩展（不含 Watch App 与嵌套扩展）。每个扩展需要单独的应用标识，免费账号每 7 天最多注册 10 个。默认保留原 Bundle ID；原标识不可用时可选用个人签名标识，扩展随之改用同一前缀。免费描述文件通常约 7 天，实际到期日以 Apple 返回并验证的材料中最早的为准。")
                             .font(.footnote).foregroundStyle(.secondary)
 
                     }

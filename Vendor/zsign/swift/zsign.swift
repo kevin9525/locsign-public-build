@@ -93,6 +93,22 @@ public enum Zsign {
 		}
 		return true
 	}
+	/// LocSign: signs an app bundle and its extensions with one key and one
+	/// provisioning profile per bundle.
+	/// - Parameters:
+	///   - provisionPaths: The main app's profile first, then one per extension
+	///   - entitlementsPaths: Entitlements for each profile, in the same order
+	/// - Returns: True if every bundle was signed with its own profile
+	static public func sign(
+		appPath: String,
+		provisionPaths: [String],
+		entitlementsPaths: [String],
+		p12Path: String,
+		p12Password: String
+	) -> Bool {
+		guard !provisionPaths.isEmpty, provisionPaths.count == entitlementsPaths.count else { return false }
+		return zsignWithProvisions(appPath, provisionPaths, entitlementsPaths, p12Path, p12Password) == 0
+	}
 	/// Check revokage
 	/// - Parameters:
 	///   - provisionPath: Relative path to a provisioning file (i.e. `samara.mobileprovision`)

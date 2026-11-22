@@ -1,12 +1,24 @@
 import Foundation
 import ZIPFoundation
 
-struct ProvisioningApp: Sendable, Equatable {
+struct ProvisioningExtension: Sendable, Equatable {
     let bundleID: String
     let name: String
 }
 
+struct ProvisioningApp: Sendable, Equatable {
+    let bundleID: String
+    let name: String
+    /// App extensions in `PlugIns`, sorted by bundle identifier. Each needs its
+    /// own App ID and profile; a free account registers at most 10 App IDs a week.
+    var extensions: [ProvisioningExtension] = []
+}
+
 struct ProvisioningIPAPreflight: Sendable {
+    /// Main app plus extensions must fit the free account's weekly App ID quota.
+    static let maximumExtensions = 9
+    private static let identifierPattern = #"^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$"#
+
     func inspect(_ ipaURL: URL) throws -> ProvisioningApp {
         try Task.checkCancellation()
         let fm = FileManager.default
@@ -42,31 +54,88 @@ struct ProvisioningIPAPreflight: Sendable {
               let enumerator = fm.enumerator(at: app, includingPropertiesForKeys: [.isSymbolicLinkKey]) else {
             throw unsupported("只支持一个主 App")
         }
+        var extensionDirectories: [URL] = []
         for case let url as URL in enumerator {
             try Task.checkCancellation()
-            guard !["app", "appex"].contains(url.pathExtension.lowercased()),
-                  url.lastPathComponent.lowercased() != "plugins",
-                  try url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else {
-                throw unsupported("暂不支持扩展、嵌套 App 或符号链接")
+            guard try url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else {
+                throw unsupported("暂不支持符号链接")
+            }
+            let kind = url.pathExtension.lowercased()
+            // Levels are relative to the main app: PlugIns is level 1, an
+            // extension directly inside it level 2. Anything nested deeper
+            // (an extension's own PlugIns, Watch apps, ExtensionKit) is rejected.
+            if kind == "app" { throw unsupported("暂不支持嵌套 App（如 Apple Watch App）") }
+            if kind == "appex" {
+                guard enumerator.level == 2, url.deletingLastPathComponent().lastPathComponent == "PlugIns" else {
+                    throw unsupported("只支持主 App 的 PlugIns 目录中的扩展，不支持嵌套扩展")
+                }
+                extensionDirectories.append(url)
+            } else if url.lastPathComponent.lowercased() == "plugins",
+                      !(enumerator.level == 1 && url.lastPathComponent == "PlugIns") {
+                throw unsupported("只支持主 App 的 PlugIns 目录中的扩展，不支持嵌套扩展")
             }
         }
         let infoData = try Data(contentsOf: app.appendingPathComponent("Info.plist"))
         guard infoData.count <= 1024 * 1024,
               let info = try PropertyListSerialization.propertyList(from: infoData, format: nil) as? [String: Any],
               let bundle = info["CFBundleIdentifier"] as? String,
-              bundle.range(of: #"^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$"#, options: .regularExpression) != nil,
+              bundle.range(of: Self.identifierPattern, options: .regularExpression) != nil,
               info["CFBundlePackageType"] as? String == "APPL",
-              let executable = info["CFBundleExecutable"] as? String, !executable.isEmpty,
-              executable != ".", executable != "..", !executable.contains("/"),
-              !executable.contains("\\"), !executable.contains("\0") else { throw unsupported("应用信息不完整") }
+              let executable = Self.executableName(info) else { throw unsupported("应用信息不完整") }
         let binary = app.appendingPathComponent(executable)
         guard try binary.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
             throw unsupported("缺少主程序")
         }
         try inspectMachO(Data(contentsOf: binary, options: .mappedIfSafe), bundleID: bundle)
+        guard extensionDirectories.count <= Self.maximumExtensions else {
+            throw unsupported("扩展超过 \(Self.maximumExtensions) 个；免费账号每周最多注册 10 个应用标识")
+        }
+        var extensions: [ProvisioningExtension] = []
+        for directory in extensionDirectories.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            try Task.checkCancellation()
+            extensions.append(try inspectExtension(directory, parent: bundle))
+        }
+        guard Set(extensions.map { $0.bundleID.lowercased() }).count == extensions.count else {
+            throw unsupported("多个扩展使用了相同的应用标识")
+        }
         try Task.checkCancellation()
         return ProvisioningApp(bundleID: bundle,
-            name: (info["CFBundleDisplayName"] as? String) ?? (info["CFBundleName"] as? String) ?? app.deletingPathExtension().lastPathComponent)
+            name: (info["CFBundleDisplayName"] as? String) ?? (info["CFBundleName"] as? String) ?? app.deletingPathExtension().lastPathComponent,
+            extensions: extensions.sorted { $0.bundleID < $1.bundleID })
+    }
+
+    /// An extension is checked exactly like the main executable: same Mach-O
+    /// and entitlement limits, plus an identifier inside the parent's namespace
+    /// as iOS requires for installation.
+    private func inspectExtension(_ directory: URL, parent: String) throws -> ProvisioningExtension {
+        let infoURL = directory.appendingPathComponent("Info.plist")
+        guard let infoData = try? Data(contentsOf: infoURL), infoData.count <= 1024 * 1024,
+              let info = (try? PropertyListSerialization.propertyList(from: infoData, format: nil)) as? [String: Any],
+              let bundle = info["CFBundleIdentifier"] as? String,
+              bundle.range(of: Self.identifierPattern, options: .regularExpression) != nil,
+              bundle.hasPrefix(parent + "."),
+              info["CFBundlePackageType"] as? String == "XPC!",
+              let executable = Self.executableName(info) else {
+            throw unsupported("扩展信息不完整，或扩展标识不属于主 App（\(directory.lastPathComponent)）")
+        }
+        let binary = directory.appendingPathComponent(executable)
+        guard try binary.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+            throw unsupported("扩展缺少主程序（\(directory.lastPathComponent)）")
+        }
+        do { try inspectMachO(Data(contentsOf: binary, options: .mappedIfSafe), bundleID: bundle) }
+        catch ProvisioningError.unsupportedIPA(let detail) {
+            throw unsupported("扩展 \(directory.lastPathComponent)：\(detail)")
+        }
+        return ProvisioningExtension(bundleID: bundle,
+            name: (info["CFBundleDisplayName"] as? String) ?? (info["CFBundleName"] as? String)
+                ?? directory.deletingPathExtension().lastPathComponent)
+    }
+
+    private static func executableName(_ info: [String: Any]) -> String? {
+        guard let executable = info["CFBundleExecutable"] as? String, !executable.isEmpty,
+              executable != ".", executable != "..", !executable.contains("/"),
+              !executable.contains("\\"), !executable.contains("\0") else { return nil }
+        return executable
     }
 
     private func inspectMachO(_ data: Data, bundleID: String) throws {

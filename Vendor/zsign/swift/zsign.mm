@@ -234,6 +234,48 @@ int zsign(
 	return bRet ? 0 : -1;
 }
 
+int zsignWithProvisions(
+	NSString *app,
+	NSArray<NSString *> *provs,
+	NSArray<NSString *> *entitlements,
+	NSString *key,
+	NSString *pass
+) {
+	ZTimer atimer;
+	if (nil == app || nil == key || nil == pass || nil == provs || nil == entitlements ||
+		0 == provs.count || provs.count != entitlements.count) {
+		ZLog::Error(">>> Invalid provisioning list!\n");
+		return -1;
+	}
+
+	string strPath = [app cStringUsingEncoding:NSUTF8StringEncoding];
+	if (!ZFile::IsFileExists(strPath.c_str())) {
+		ZLog::ErrorV(">>> Invalid path! %s\n", strPath.c_str());
+		return -1;
+	}
+	string strPKeyFile = [key cStringUsingEncoding:NSUTF8StringEncoding];
+	string strPassword = [pass cStringUsingEncoding:NSUTF8StringEncoding];
+
+	// list keeps element addresses stable; ZBundle holds pointers into it.
+	list<ZSignAsset> assets;
+	for (NSUInteger i = 0; i < provs.count; i++) {
+		string strProvFile = [provs[i] cStringUsingEncoding:NSUTF8StringEncoding];
+		string strEntitleFile = [entitlements[i] cStringUsingEncoding:NSUTF8StringEncoding];
+		assets.emplace_back();
+		if (!assets.back().Init("", strPKeyFile, strProvFile, strEntitleFile, strPassword, false, false, false)) {
+			return -1;
+		}
+	}
+
+	vector<string> arrNone;
+	atimer.Reset();
+	ZBundle bundle;
+	// Force a full re-sign; no cache, never strip the embedded profiles.
+	bool bRet = bundle.SignFolder(&assets, strPath, "", "", "", arrNone, arrNone, true, false, false, false);
+	atimer.PrintResult(bRet, ">>> Signed with %lu profiles %s!", (unsigned long)provs.count, bRet ? "OK" : "Failed");
+	return bRet ? 0 : -1;
+}
+
 
 int checkCert(
 	NSString *prov,

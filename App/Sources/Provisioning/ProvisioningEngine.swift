@@ -131,18 +131,47 @@ actor ProvisioningEngineLive: ProvisioningEngine {
                 expectedBundleID: app.bundleID, expectedTeamID: request.teamID, expectedUDID: request.deviceUDID,
                 expectedCertificateDER: active.certificateDER, privateKeyPEM: Data(active.material.privateKeyPEM.utf8))
         } catch ProfileValidationError.expired { return nil }
+        // Every extension in this IPA must have its own still-valid cached profile.
+        let extensions: CheckedExtensions
+        do {
+            guard let checked = try checkExtensions(active.material.extensions, app: app, validator: validator,
+                    request: request, certificateDER: active.certificateDER,
+                    privateKeyPEM: Data(active.material.privateKeyPEM.utf8)) else { return nil }
+            extensions = checked
+        } catch ProfileValidationError.expired { return nil }
         try check(operation)
+        let profileExpiry = min(verified.expiry, extensions.profileExpiry)
         if let minimumProfileExpiry = request.minimumProfileExpiry {
-            guard verified.expiry > minimumProfileExpiry else { return nil }
+            guard profileExpiry > minimumProfileExpiry else { return nil }
         }
         return ProvisioningMaterial(privateKeyPEM: active.material.privateKeyPEM, profileData: verified.raw,
-            certificateExpiry: min(active.material.certificateExpiry, verified.certificateExpiry), profileExpiry: verified.expiry,
-            signingBundleID: app.bundleID)
+            certificateExpiry: min(active.material.certificateExpiry, verified.certificateExpiry, extensions.certificateExpiry),
+            profileExpiry: profileExpiry, signingBundleID: app.bundleID,
+            extensionProfiles: extensions.profiles.isEmpty ? nil : extensions.profiles)
     }
 
     private func profileValidator() throws -> ProvisioningProfileValidator {
         if let trustAnchors { return ProvisioningProfileValidator(trustAnchors: trustAnchors) }
         return try .apple()
+    }
+
+    /// Validates each extension profile with the same CMS, team, device,
+    /// certificate and key rules as the app. Returns nil when the profiles do
+    /// not correspond exactly (one each) to the IPA's extensions.
+    private func checkExtensions(_ items: [ExtensionProfileMaterial], app: ProvisioningApp,
+                                 validator: ProvisioningProfileValidator, request: ProvisioningRequest,
+                                 certificateDER: Data, privateKeyPEM: Data) throws -> CheckedExtensions? {
+        guard items.sortedBundleIDs == app.extensions.map(\.bundleID).sorted() else { return nil }
+        var result = CheckedExtensions()
+        for item in items {
+            let checked = try validator.validate(data: item.profileData, expectedBundleID: item.bundleID,
+                expectedTeamID: request.teamID, expectedUDID: request.deviceUDID,
+                expectedCertificateDER: certificateDER, privateKeyPEM: privateKeyPEM)
+            result.profiles.append(.init(bundleID: item.bundleID, profileData: checked.raw, profileExpiry: checked.expiry))
+            result.profileExpiry = min(result.profileExpiry, checked.expiry)
+            result.certificateExpiry = min(result.certificateExpiry, checked.certificateExpiry)
+        }
+        return result
     }
 
     func provision(request: ProvisioningRequest, confirmRevocation: @escaping @Sendable ([CertificateRevocation]) async -> Bool) async throws -> ProvisioningMaterial {
@@ -174,14 +203,20 @@ actor ProvisioningEngineLive: ProvisioningEngine {
                 expectedBundleID: app.bundleID,
                 expectedTeamID: request.teamID, expectedUDID: request.deviceUDID,
                 expectedCertificateDER: der, privateKeyPEM: pending.privateKeyPEM)
+            guard let extensions = try checkExtensions(material.extensions, app: app, validator: validator,
+                    request: request, certificateDER: der, privateKeyPEM: pending.privateKeyPEM) else {
+                throw ProvisioningError.materialInvalid("扩展描述文件与 IPA 中的扩展不一致")
+            }
+            let profileExpiry = min(verified.expiry, extensions.profileExpiry)
             if let minimumProfileExpiry = request.minimumProfileExpiry {
-                guard verified.expiry > minimumProfileExpiry else {
+                guard profileExpiry > minimumProfileExpiry else {
                     throw ProvisioningError.materialInvalid("描述文件有效期未延长，请稍后重试")
                 }
             }
             let checkedMaterial = ProvisioningMaterial(privateKeyPEM: material.privateKeyPEM, profileData: verified.raw,
-                certificateExpiry: min(certificate.expiry, verified.certificateExpiry), profileExpiry: verified.expiry,
-                signingBundleID: app.bundleID)
+                certificateExpiry: min(certificate.expiry, verified.certificateExpiry, extensions.certificateExpiry),
+                profileExpiry: profileExpiry, signingBundleID: app.bundleID,
+                extensionProfiles: extensions.profiles.isEmpty ? nil : extensions.profiles)
             let active = ActiveSigningMaterial(certificateID: certificate.id, certificateDER: der, bundleID: verified.profile.bundleID,
                                               deviceUDID: request.deviceUDID, material: checkedMaterial)
             try check(operation)
@@ -272,6 +307,11 @@ private struct ActiveSigningMaterial: Codable {
     let bundleID: String
     let deviceUDID: String
     let material: ProvisioningMaterial
+}
+private struct CheckedExtensions {
+    var profiles: [ExtensionProfileMaterial] = []
+    var profileExpiry = Date.distantFuture
+    var certificateExpiry = Date.distantFuture
 }
 private struct GuardedProvisioningStore: ProvisioningMaterialStoring {
     let engine: ProvisioningEngineLive

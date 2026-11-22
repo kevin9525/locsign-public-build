@@ -35,6 +35,17 @@ int zsign(
 	void(^completionHandler)(BOOL success)
 );
 
+// LocSign: sign an app and its extensions with one key and one profile per
+// bundle. provs[0]/entitlements[0] belong to the main app; each bundle uses
+// the profile whose application identifier exactly matches its own.
+int zsignWithProvisions(
+	NSString *app,
+	NSArray<NSString *> *provs,
+	NSArray<NSString *> *entitlements,
+	NSString *key,
+	NSString *pass
+);
+
 int checkCert(
 	NSString *prov,
 	NSString *key,

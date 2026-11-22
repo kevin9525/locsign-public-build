@@ -23,3 +23,180 @@
  			if (!ZFile::WriteFileV(pSignAsset->m_strProvData, "%s/embedded.mobileprovision", m_strAppFolder.c_str())) { // embedded.mobileprovision
  				ZLog::ErrorV(">>> Can't write embedded.mobileprovision!\n");
  				return false;
+--- a/src/bundle.cpp
++++ b/src/bundle.cpp
+@@ -375,6 +375,36 @@
+ 		}
+ 	}
+ 
++	if (m_pSignAssets) {
++		// LocSign: pick this bundle's own profile by exact application identifier
++		// ("<prefix>.<bundle id>") and embed it BEFORE CodeResources is generated,
++		// so the bundle's resource seal covers the final profile bytes. Upstream
++		// wrote it after sealing and matched by suffix.
++		ZSignAsset* pMatched = NULL;
++		for (auto it = m_pSignAssets->begin(); it != m_pSignAssets->end(); ++it) {
++			const string& strAppId = it->m_strApplicationId;
++			size_t pos = strAppId.find('.');
++			if (string::npos != pos && strAppId.substr(pos + 1) == strBundleId) {
++				pMatched = &(*it);
++				break;
++			}
++		}
++		if (NULL != pMatched) {
++			m_pSignAsset = pMatched;
++			if (!ZFile::WriteFileV(m_pSignAsset->m_strProvData, "%s/embedded.mobileprovision", strBaseFolder.c_str())) {
++				ZLog::ErrorV(">>> Can't write embedded.mobileprovision!\n");
++				return false;
++			}
++		} else if ("/" == strFolder || ZFile::IsPathSuffix(strBaseFolder, ".appex") || ZFile::IsPathSuffix(strBaseFolder, ".app")) {
++			// An app or extension without its own profile cannot install.
++			ZLog::ErrorV(">>> No provisioning profile for bundle: %s\n", strBundleId.c_str());
++			return false;
++		} else {
++			// Frameworks have no profile; sign them with the main app's identity.
++			m_pSignAsset = &m_pSignAssets->front();
++		}
++	}
++
+ 	ZFile::CreateFolderV("%s/_CodeSignature", strBaseFolder.c_str());
+ 	string strCodeResFile = strBaseFolder + "/_CodeSignature/CodeResources";
+ 
+@@ -418,40 +448,6 @@
+ 	if (!ZFile::WriteFile(strCodeResFile.c_str(), strCodeResData)) {
+ 		ZLog::ErrorV("\tWriting CodeResources failed! %s\n", strCodeResFile.c_str());
+ 		return false;
+-	}
+-
+-	if (m_pSignAssets) {
+-		auto endsWith = [](const string& str, const string& suffix) {
+-			return str.size() >= suffix.size() && 0 == str.compare(str.size()-suffix.size(), suffix.size(), suffix);
+-		};
+-
+-		for (auto it = m_pSignAssets->rbegin(); it != m_pSignAssets->rend(); ++it) {
+-			m_pSignAsset = &(*it);
+-			if (endsWith(m_pSignAsset->m_strApplicationId, strBundleId)) {
+-				if (!ZFile::WriteFileV(m_pSignAsset->m_strProvData, "%s/%s/embedded.mobileprovision", m_strAppFolder.c_str(), strFolder.c_str())) {
+-					ZLog::ErrorV(">>> Can't write embedded.mobileprovision!\n");
+-					return false;
+-				}
+-				break;
+-			}
+-		}
+-	}
+-
+-	if (m_pSignAssets) {
+-		auto endsWith = [](const string& str, const string& suffix) {
+-			return str.size() >= suffix.size() && 0 == str.compare(str.size()-suffix.size(), suffix.size(), suffix);
+-		};
+-
+-		for (auto it = m_pSignAssets->rbegin(); it != m_pSignAssets->rend(); ++it) {
+-			m_pSignAsset = &(*it);
+-			if (endsWith(m_pSignAsset->m_strApplicationId, strBundleId)) {
+-				if (!ZFile::WriteFileV(m_pSignAsset->m_strProvData, "%s/%s/embedded.mobileprovision", m_strAppFolder.c_str(), strFolder.c_str())) {
+-					ZLog::ErrorV(">>> Can't write embedded.mobileprovision!\n");
+-					return false;
+-				}
+-				break;
+-			}
+-		}
+ 	}
+ 
+ 	if (!macho.Sign(m_pSignAsset, bForceSign, strBundleId, strInfoSHA1, strInfoSHA256, strCodeResData)) {
+--- a/swift/zsign.hpp
++++ b/swift/zsign.hpp
+@@ -35,6 +35,17 @@
+ 	void(^completionHandler)(BOOL success)
+ );
+ 
++// LocSign: sign an app and its extensions with one key and one profile per
++// bundle. provs[0]/entitlements[0] belong to the main app; each bundle uses
++// the profile whose application identifier exactly matches its own.
++int zsignWithProvisions(
++	NSString *app,
++	NSArray<NSString *> *provs,
++	NSArray<NSString *> *entitlements,
++	NSString *key,
++	NSString *pass
++);
++
+ int checkCert(
+ 	NSString *prov,
+ 	NSString *key,
+--- a/swift/zsign.mm
++++ b/swift/zsign.mm
+@@ -233,6 +233,49 @@
+ 	gtimer.Print(">>> Done.");
+ 	return bRet ? 0 : -1;
+ }
++
++int zsignWithProvisions(
++	NSString *app,
++	NSArray<NSString *> *provs,
++	NSArray<NSString *> *entitlements,
++	NSString *key,
++	NSString *pass
++) {
++	ZTimer atimer;
++	if (nil == app || nil == key || nil == pass || nil == provs || nil == entitlements ||
++		0 == provs.count || provs.count != entitlements.count) {
++		ZLog::Error(">>> Invalid provisioning list!\n");
++		return -1;
++	}
++
++	string strPath = [app cStringUsingEncoding:NSUTF8StringEncoding];
++	if (!ZFile::IsFileExists(strPath.c_str())) {
++		ZLog::ErrorV(">>> Invalid path! %s\n", strPath.c_str());
++		return -1;
++	}
++	string strPKeyFile = [key cStringUsingEncoding:NSUTF8StringEncoding];
++	string strPassword = [pass cStringUsingEncoding:NSUTF8StringEncoding];
++
++	// list keeps element addresses stable; ZBundle holds pointers into it.
++	list<ZSignAsset> assets;
++	for (NSUInteger i = 0; i < provs.count; i++) {
++		string strProvFile = [provs[i] cStringUsingEncoding:NSUTF8StringEncoding];
++		string strEntitleFile = [entitlements[i] cStringUsingEncoding:NSUTF8StringEncoding];
++		assets.emplace_back();
++		if (!assets.back().Init("", strPKeyFile, strProvFile, strEntitleFile, strPassword, false, false, false)) {
++			return -1;
++		}
++	}
++
++	vector<string> arrNone;
++	atimer.Reset();
++	ZBundle bundle;
++	// Force a full re-sign; no cache, never strip the embedded profiles.
++	bool bRet = bundle.SignFolder(&assets, strPath, "", "", "", arrNone, arrNone, true, false, false, false);
++	atimer.PrintResult(bRet, ">>> Signed with %lu profiles %s!", (unsigned long)provs.count, bRet ? "OK" : "Failed");
++	return bRet ? 0 : -1;
++}
++
+ 
+ int checkCert(
+ 	NSString *prov,
+--- a/swift/zsign.swift
++++ b/swift/zsign.swift
+@@ -93,6 +93,22 @@
+ 		}
+ 		return true
+ 	}
++	/// LocSign: signs an app bundle and its extensions with one key and one
++	/// provisioning profile per bundle.
++	/// - Parameters:
++	///   - provisionPaths: The main app's profile first, then one per extension
++	///   - entitlementsPaths: Entitlements for each profile, in the same order
++	/// - Returns: True if every bundle was signed with its own profile
++	static public func sign(
++		appPath: String,
++		provisionPaths: [String],
++		entitlementsPaths: [String],
++		p12Path: String,
++		p12Password: String
++	) -> Bool {
++		guard !provisionPaths.isEmpty, provisionPaths.count == entitlementsPaths.count else { return false }
++		return zsignWithProvisions(appPath, provisionPaths, entitlementsPaths, p12Path, p12Password) == 0
++	}
+ 	/// Check revokage
+ 	/// - Parameters:
+ 	///   - provisionPath: Relative path to a provisioning file (i.e. `samara.mobileprovision`)

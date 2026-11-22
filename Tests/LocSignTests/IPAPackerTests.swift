@@ -67,6 +67,89 @@ final class IPAPackerTests: XCTestCase {
         } catch { XCTFail("Explicit signing identifier was not applied: \(error.localizedDescription)") }
     }
 
+    /// Builds Payload/Demo.app with PlugIns/Widget.appex; both executables are
+    /// the simulator host binary so Zsign signs real Mach-O files.
+    private func extensionIPA(root: URL, appID: String) throws -> URL {
+        let app = root.appendingPathComponent("Payload/Demo.app")
+        let widget = app.appendingPathComponent("PlugIns/Widget.appex")
+        try FileManager.default.createDirectory(at: widget, withIntermediateDirectories: true)
+        let host = try XCTUnwrap(Bundle.main.executableURL)
+        try FileManager.default.copyItem(at: host, to: app.appendingPathComponent("Demo"))
+        try FileManager.default.copyItem(at: host, to: widget.appendingPathComponent("Widget"))
+        try PlistCodec.encodeXML(["CFBundleIdentifier": appID, "CFBundleExecutable": "Demo"])
+            .write(to: app.appendingPathComponent("Info.plist"))
+        try PlistCodec.encodeXML(["CFBundleIdentifier": appID + ".widget", "CFBundleExecutable": "Widget",
+                                  "CFBundlePackageType": "XPC!"])
+            .write(to: widget.appendingPathComponent("Info.plist"))
+        let ipa = root.appendingPathComponent("original.ipa")
+        try IPAPacker.makeZip(fromDirectory: root.appendingPathComponent("Payload"), to: ipa)
+        return ipa
+    }
+
+    @MainActor
+    func testExtensionIsSignedWithItsOwnSealedProfileUnderTheRetargetedIdentifier() async throws {
+        let appProfile = try Data(contentsOf: fixture("profile-valid", "mobileprovision"))
+        let widgetProfile = try Data(contentsOf: fixture("profile-extension", "mobileprovision"))
+        let material = ProvisioningMaterial(privateKeyPEM: try String(contentsOf: fixture("test-key", "pem"), encoding: .utf8),
+            profileData: appProfile, certificateExpiry: .distantFuture, profileExpiry: .distantFuture,
+            signingBundleID: "com.test.app",
+            extensionProfiles: [.init(bundleID: "com.test.app.widget", profileData: widgetProfile, profileExpiry: .distantFuture)])
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        // The input uses another identifier; the extension must follow the app's new one.
+        let ipa = try extensionIPA(root: root, appID: "com.original.app")
+        let output = try await SigningViewModel.signProvisionedMaterial(ipa, material)
+        defer { try? FileManager.default.removeItem(at: output) }
+        let signed = try IPAPacker.unpack(output, into: root.appendingPathComponent("check"))
+        let widget = signed.appendingPathComponent("PlugIns/Widget.appex")
+
+        let widgetInfo = try XCTUnwrap(PlistCodec.decode(Data(contentsOf: widget.appendingPathComponent("Info.plist"))) as? [String: Any])
+        XCTAssertEqual(widgetInfo["CFBundleIdentifier"] as? String, "com.test.app.widget")
+        XCTAssertEqual(try Data(contentsOf: widget.appendingPathComponent("embedded.mobileprovision")), widgetProfile)
+        XCTAssertEqual(try Data(contentsOf: signed.appendingPathComponent("embedded.mobileprovision")), appProfile)
+        // Each bundle's own seal must cover its own final profile.
+        try assertProfileSealed(in: widget, executable: "Widget", profile: widgetProfile)
+        try assertProfileSealed(in: signed, executable: "Demo", profile: appProfile)
+        let widgetClaims = try signedEntitlements(Data(contentsOf: widget.appendingPathComponent("Widget")))
+        XCTAssertEqual(widgetClaims["application-identifier"] as? String, "PREFIX1234.com.test.app.widget")
+        XCTAssertEqual(widgetClaims["keychain-access-groups"] as? [String], ["PREFIX1234.com.test.app.widget"])
+        let appClaims = try signedEntitlements(Data(contentsOf: signed.appendingPathComponent("Demo")))
+        XCTAssertEqual(appClaims["application-identifier"] as? String, "PREFIX1234.com.test.app")
+        // The parent seal covers the extension's final profile bytes too.
+        let manifest = try XCTUnwrap(PlistCodec.decode(Data(contentsOf: signed.appendingPathComponent("_CodeSignature/CodeResources"))) as? [String: Any])
+        let files2 = try XCTUnwrap(manifest["files2"] as? [String: Any])
+        let nested = try XCTUnwrap(files2["PlugIns/Widget.appex/embedded.mobileprovision"] as? [String: Any])
+        XCTAssertEqual(nested["hash2"] as? Data, Data(SHA256.hash(data: widgetProfile)))
+    }
+
+    @MainActor
+    func testExtensionWithoutItsOwnProfileIsRejected() async throws {
+        let appProfile = try Data(contentsOf: fixture("profile-valid", "mobileprovision"))
+        let key = try String(contentsOf: fixture("test-key", "pem"), encoding: .utf8)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let ipa = try extensionIPA(root: root, appID: "com.test.app")
+        // Neither a missing extension profile nor the app's profile may sign the extension.
+        let cases: [[ExtensionProfileMaterial]] = [[], [.init(bundleID: "com.test.app.widget", profileData: appProfile,
+                                                              profileExpiry: .distantFuture)]]
+        for extensions in cases {
+            let material = ProvisioningMaterial(privateKeyPEM: key, profileData: appProfile,
+                certificateExpiry: .distantFuture, profileExpiry: .distantFuture, signingBundleID: "com.test.app",
+                extensionProfiles: extensions)
+            do {
+                let output = try await SigningViewModel.signProvisionedMaterial(ipa, material)
+                try? FileManager.default.removeItem(at: output)
+                XCTFail("Extension signed without its own profile")
+            } catch {}
+        }
+        // Manual signing never accepts an IPA with extensions.
+        do {
+            let output = try await SigningEngine.shared.sign(ipaURL: ipa, keyPEM: key, profile: ProfileParser.parse(appProfile))
+            try? FileManager.default.removeItem(at: output)
+            XCTFail("Manual signing accepted an extension")
+        } catch {}
+    }
+
     private func fixture(_ name: String, _ ext: String) throws -> URL {
         try XCTUnwrap(Bundle(for: IPAPackerTests.self).url(forResource: name, withExtension: ext),
                       "fixture \(name).\(ext) 缺失")

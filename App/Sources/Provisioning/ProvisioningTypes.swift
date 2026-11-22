@@ -27,12 +27,30 @@ struct CertificateRevocation: Sendable, Equatable, Identifiable {
     let expiry: Date
 }
 
+/// One app extension's own profile. Every extension needs its own App ID and
+/// development profile bound to the same certificate and device as the app.
+struct ExtensionProfileMaterial: Codable, Sendable, Equatable {
+    let bundleID: String
+    let profileData: Data
+    let profileExpiry: Date
+}
+
 struct ProvisioningMaterial: Codable, Sendable {
     let privateKeyPEM: String
     let profileData: Data
     let certificateExpiry: Date
+    /// Effective expiry: the earliest of the app and all extension profiles.
     let profileExpiry: Date
     var signingBundleID: String? = nil
+    // Optional so material saved before extension support still decodes.
+    var extensionProfiles: [ExtensionProfileMaterial]? = nil
+
+    var extensions: [ExtensionProfileMaterial] { extensionProfiles ?? [] }
+}
+
+extension Array where Element == ExtensionProfileMaterial {
+    /// Extensions must be signed exactly once each, regardless of order.
+    var sortedBundleIDs: [String] { map(\.bundleID).sorted() }
 }
 
 enum ProvisioningError: LocalizedError, Equatable {

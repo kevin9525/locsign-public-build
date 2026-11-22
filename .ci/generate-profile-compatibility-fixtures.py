@@ -38,3 +38,22 @@ for label, values in variants.items():
     (root / ('profile-' + label + '.mobileprovision')).write_bytes(
         builder.sign(serialization.Encoding.DER, [pkcs7.PKCS7Options.Binary]))
 print('Generated seven supplemental synthetic profile fixtures.')
+
+
+def write_extension_profile():
+    """App extension profile: its own App ID inside the parent's namespace."""
+    app_id = 'PREFIX1234.com.test.app.widget'
+    entitlements = dict(payload['Entitlements'], **{'application-identifier': app_id,
+                                                    'keychain-access-groups': [app_id]})
+    data = plistlib.dumps(dict(payload, Entitlements=entitlements, AppIDName='Synthetic Widget',
+                               Name='Synthetic Widget Profile', UUID='5E0B3C1A-7D21-4C8E-9F3B-2A6D4E8F1C07'))
+    builder = pkcs7.PKCS7SignatureBuilder().set_data(data).add_signer(signer, key, hashes.SHA256())
+    for cert in chain:
+        if cert != signer:
+            builder = builder.add_certificate(cert)
+    (root / 'profile-extension.mobileprovision').write_bytes(
+        builder.sign(serialization.Encoding.DER, [pkcs7.PKCS7Options.Binary]))
+
+
+write_extension_profile()
+print('Generated the synthetic extension profile fixture.')
