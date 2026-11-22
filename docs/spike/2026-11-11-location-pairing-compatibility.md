@@ -28,3 +28,5 @@ Validation on [macOS CI](https://github.com/kevin9525/locsign-public-build/actio
 ## Device acceptance
 
 Update using the same Apple ID and LocSign identifier. Keep the existing saved pairing file, enable LocalDevVPN and developer mode, unlock the phone, and apply the same selected point. The original local parse error should no longer block developer-service preparation. Confirm the resulting location in the device Maps app, then request restoration and confirm the actual position. First-time personalized image mounting and real GPS behavior require device validation independently of parser/TLS tests.
+
+Follow-up 2026-11-11: the user confirmed location could be applied on 0.4.1. A separate mainland search-coordinate offset was then confirmed by a successful manual coordinate conversion; see [coordinate-system investigation](2026-11-11-location-coordinate-systems.md). Restoration and long-running background persistence were not separately confirmed.

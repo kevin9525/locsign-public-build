@@ -1,5 +1,7 @@
 # LocSign M1 签名链 App 化 实施计划
 
+> **状态（2026-11-22 补记）：已被取代。** Task 1–3 按本计划执行；ldid 方案改为 Zsign，apple-private-apis 依赖改为固定版本 XKit。后续由 `2026-11-05-nb-takeover.md` 与 `2026-11-06-apple-id-provisioning.md` 接续，0.2.9 真机完成"导入→签名→安装→启动"（`docs/apple-id-acceptance.md`）。下列勾选框为原始计划，未逐项回填。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在 SwiftUI App（LocSign）内实现完整签名链：Apple ID 登录→证书/描述文件获取→IPA 重签→设备安装，真机完成一次「导入→签名→安装→启动」第三方 IPA。

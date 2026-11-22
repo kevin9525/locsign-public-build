@@ -136,6 +136,8 @@ jobs:
             -derivedDataPath build 2>&1 | tee build/device.log | xcbeautify
       - name: Assemble unsigned IPA
         run: python3 .ci/make-ipa.py
+      - name: Verify app icon in IPA
+        run: python3 .ci/verify-app-icon.py --ipa build/LocSign.ipa
       - uses: actions/upload-artifact@v4
         with:
           name: LocSign-ipa

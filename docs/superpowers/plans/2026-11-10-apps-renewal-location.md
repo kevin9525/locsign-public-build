@@ -1,5 +1,7 @@
 # App management, renewal and location Implementation Plan
 
+> **Status (backfilled 2026-11-22): delivered in 0.4.0 and refined through 0.4.10.** Fixed-point location confirmed on device in 0.4.1/0.4.2; self-renewal result handling in 0.4.10 awaits device acceptance. See `tools/devlog.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans for inline implementation; independent location research follows dispatching-parallel-agents. Track steps below.
 
 **Goal:** Retain installed Apps for renewal and expose functioning fixed-point device location.

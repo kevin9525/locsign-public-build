@@ -1,5 +1,7 @@
 # LocSign M0 Spike 实施计划
 
+> **状态（2026-11-22 补记）：已完成。** 四闸门全部 PASS，结论 GO，见 `docs/spike/2026-11-M0-spike-report.md`。下列勾选框为原始计划，未逐项回填。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在机主真机（iOS 18.x）上用现成 PC 工具验证「免费 Apple ID 签名安装、开发者模式+DDI 挂载、定位模拟、恢复定位」四条链路，产出 spike 报告作为进入 M1 的 GO/NO-GO 闸门。

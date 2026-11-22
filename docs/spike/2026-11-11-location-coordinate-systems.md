@@ -15,7 +15,9 @@ After 0.4.1, the user confirmed location changes worked, but a mainland address 
 
 ## Verification
 
-Regression coverage includes independently fixed forward/inverse vectors, the on-device-confirmed mainland case, repeated apply, relaunch, manual GPS input, map taps, legacy values, map-region changes, and HK/MO/TW/overseas search metadata. Windows packaging tests passed (8); macOS XCTest and final artifact verification are pending.
+Regression coverage includes independently fixed forward/inverse vectors, the on-device-confirmed mainland case, northern/western numerical-envelope edges, repeated apply, reapply after relaunch, manual GPS input, map taps, legacy values, map-region changes, and HK/MO/TW/overseas search metadata. CI run [42945086554](https://github.com/kevin9525/locsign-public-build/actions/runs/42945086554) passed 381 XCTest, 16 Rust tests, 8 build-tool tests, simulator/device builds and unsigned IPA assembly.
+
+The verified unsigned arm64 IPA is `LocSign-0.4.2-build21-unsigned.ipa`, 24,743,350 bytes, SHA-256 `41d0145b91c0cb19f4cfaa9e4f96cb0abc161a24a809057dd6857cb1ca47bf6e`. Its version/build, unchanged `com.locsign.LocSign` identifier, required resources, embedded DDI hashes, unsigned state and ZIP CRC were checked. This CI result does not establish actual location behavior on a physical iPhone.
 
 ## Device check
 

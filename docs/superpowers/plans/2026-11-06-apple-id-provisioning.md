@@ -1,5 +1,7 @@
 # 免费 Apple ID ProvisioningEngine Implementation Plan
 
+> **状态（2026-11-22 补记）：已完成。** 0.2.x 交付 Apple ID 登录/2FA、证书与描述文件申请复用；0.2.9 真机签名安装通过（`docs/apple-id-acceptance.md`）。下列勾选框为原始计划，未逐项回填。
+
 > REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox syntax.
 
 **Goal:** 在 LocSign 中加入免费 Apple ID 登录、2FA、开发证书与 mobileprovision 申请/复用流程，并把已验证材料接入现有签名和安装链路。
