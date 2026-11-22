@@ -90,6 +90,12 @@ struct AppsView: View {
                     }
                 }
                 Section {
+                    NavigationLink("证书与 App ID 管理") { DeveloperAccountView(account: account, blocked: busy) }
+                        .disabled(busy)
+                } header: { Text("Apple ID") } footer: {
+                    Text("查看和撤销开发证书，列出 App ID、描述文件和已注册设备，估算免费账号本周剩余的 App ID 额度。需要先登录 Apple ID。")
+                }
+                Section {
                     Button(loading ? "正在读取设备 App…" : "读取已安装 App 列表", action: browse).disabled(busy || settings.pairing == nil)
                     if let deviceApps {
                         ForEach(deviceApps.apps) { app in

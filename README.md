@@ -2,6 +2,8 @@
 
 iOS 18 签名与定位工具的开发中项目，参考 NB 助手的核心使用流程。
 
+**0.4.12 / build 31** 新增 Apple ID 证书管理（参考 NB 全能助手）：在 App 页"Apple ID → 证书与 App ID 管理"中查看开发证书、App ID 与描述文件、已注册设备，估算免费账号 7 天内剩余的 App ID 额度，并可单独撤销证书。撤销前会重新核对 Apple 的证书列表，有变化就停止；LocSign 不会删除 App ID、描述文件或设备。尚待 CI 与真机核对，见[证书管理记录](docs/spike/2026-11-22-certificate-management.md)。
+
 **0.4.11 / build 30** M3 打磨：新增 App 图标（蓝青渐变底、白色定位针加对勾），CI 在打包后校验 IPA 内含编译后的图标资源与 `CFBundleIconName`。覆盖更新方式与 0.4.10 相同：在 App 页顶部"LocSign 自身"选择"更换 LocSign IPA 并更新"，使用原 Apple ID 和当前应用标识，不要先卸载。图标显示与版本号仍待真机核对，见[图标记录](docs/spike/2026-11-22-app-icon.md)。
 
 同版本起，Apple ID 自动申请支持带扩展的 IPA（小组件、分享、通知等，位于 `PlugIns`，最多 9 个）。每个扩展单独注册应用标识并申请描述文件；免费账号每 7 天最多注册 10 个应用标识，带扩展的 App 会多占额度。App 的有效期按主 App 与扩展中最早到期的计算。Watch App、嵌套扩展及手动证书签名带扩展的 IPA 仍不支持。详见[扩展支持记录](docs/spike/2026-11-22-app-extensions.md)。

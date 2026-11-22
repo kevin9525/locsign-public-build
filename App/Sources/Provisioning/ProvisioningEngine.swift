@@ -8,11 +8,21 @@ protocol ProvisioningEngine: Sendable {
     func provision(request: ProvisioningRequest, confirmRevocation: @escaping @Sendable ([CertificateRevocation]) async -> Bool) async throws -> ProvisioningMaterial
     func cancel() async
     func logout(account: String) async throws
+    /// Read-only overview of the team's certificates, App IDs and devices.
+    func accountOverview(accountID: UUID, teamID: String) async throws -> DeveloperAccountOverview
+    /// Revokes one certificate after re-checking Apple's list; drops local use first.
+    func revokeCertificate(_ certificate: CertificateRevocation, accountID: UUID, teamID: String) async throws
 }
 
 extension ProvisioningEngine {
     func restoreSigningAccount() async throws -> ProvisioningAccount? { nil }
     func cachedMaterial(request: ProvisioningRequest) async throws -> ProvisioningMaterial? { nil }
+    func accountOverview(accountID: UUID, teamID: String) async throws -> DeveloperAccountOverview {
+        throw ProvisioningError.invalidAccount
+    }
+    func revokeCertificate(_ certificate: CertificateRevocation, accountID: UUID, teamID: String) async throws {
+        throw ProvisioningError.invalidAccount
+    }
 }
 
 protocol ProvisioningBackend: Sendable {
@@ -20,6 +30,21 @@ protocol ProvisioningBackend: Sendable {
     func provision(request: ProvisioningRequest, session: AppleAccountSession, store: any ProvisioningMaterialStoring,
                    confirmRevocation: @escaping @Sendable ([CertificateRevocation]) async -> Bool) async throws -> ProvisioningMaterial
     func invalidate()
+    func accountOverview(teamID: String, session: AppleAccountSession, store: any ProvisioningMaterialStoring,
+                         localCertificateIDs: Set<String>) async throws -> DeveloperAccountOverview
+    func revokeCertificate(_ certificate: CertificateRevocation, teamID: String, session: AppleAccountSession,
+                           store: any ProvisioningMaterialStoring) async throws
+}
+
+extension ProvisioningBackend {
+    func accountOverview(teamID: String, session: AppleAccountSession, store: any ProvisioningMaterialStoring,
+                         localCertificateIDs: Set<String>) async throws -> DeveloperAccountOverview {
+        throw ProvisioningError.invalidAccount
+    }
+    func revokeCertificate(_ certificate: CertificateRevocation, teamID: String, session: AppleAccountSession,
+                           store: any ProvisioningMaterialStoring) async throws {
+        throw ProvisioningError.invalidAccount
+    }
 }
 
 actor ProvisioningEngineLive: ProvisioningEngine {
@@ -249,6 +274,56 @@ actor ProvisioningEngineLive: ProvisioningEngine {
             }
             throw error
         }
+    }
+
+    func accountOverview(accountID: UUID, teamID: String) async throws -> DeveloperAccountOverview {
+        let session = try currentSession(accountID: accountID, teamID: teamID)
+        let operation = begin()
+        let context = try makeBackend(session.account.appleID)
+        backend = context
+        defer { release(operation) }
+        // The active identity may differ from pending after a failed later
+        // attempt; both count as "in use" on the management page.
+        var local = Set<String>()
+        if let data = try keychain.read(account: session.account.appleID, provider: Self.materialNamespace,
+                                        team: teamID, key: "active"),
+           let active = try? JSONDecoder().decode(ActiveSigningMaterial.self, from: data) {
+            local.insert(active.certificateID)
+        }
+        let store = GuardedProvisioningStore(engine: self, operation: operation,
+                                             account: session.account.appleID, team: teamID)
+        let overview = try await context.accountOverview(teamID: teamID, session: session, store: store,
+                                                         localCertificateIDs: local)
+        try check(operation)
+        return overview
+    }
+
+    func revokeCertificate(_ certificate: CertificateRevocation, accountID: UUID, teamID: String) async throws {
+        let session = try currentSession(accountID: accountID, teamID: teamID)
+        let operation = begin()
+        let context = try makeBackend(session.account.appleID)
+        backend = context
+        defer { release(operation) }
+        // The guarded store removes matching pending/active material before the
+        // remote revocation, so later installs request a new certificate.
+        let store = GuardedProvisioningStore(engine: self, operation: operation,
+                                             account: session.account.appleID, team: teamID)
+        try await context.revokeCertificate(certificate, teamID: teamID, session: session, store: store)
+        try check(operation)
+    }
+
+    private func currentSession(accountID: UUID, teamID: String) throws -> AppleAccountSession {
+        guard let session, session.account.id == accountID, !teamID.isEmpty,
+              session.account.teams.contains(where: { $0.id == teamID }),
+              session.providerID == configuration.providerID, session.token.expiry > Date() else {
+            throw ProvisioningError.invalidAccount
+        }
+        return session
+    }
+    private func release(_ operation: UUID) {
+        guard generation == operation else { return }
+        backend?.invalidate()
+        backend = nil
     }
 
     func cancel() async { _ = begin() }

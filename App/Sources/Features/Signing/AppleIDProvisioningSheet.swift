@@ -34,6 +34,8 @@ struct AppleIDProvisioningSheet: View {
                                 Text("\(team.name)（\(team.id)）").tag(team.id)
                             }
                         }.disabled(busy)
+                        NavigationLink("证书与 App ID 管理") { DeveloperAccountView(account: account, blocked: busy) }
+                            .disabled(busy || account.teamID.isEmpty || account.requiresLogin)
                         Button("退出并清除本机账号资料", role: .destructive) {
                             start { signing.clearProvisioningOutput(); await account.logout() }
                         }.disabled(busy)

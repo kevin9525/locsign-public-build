@@ -147,6 +147,58 @@ struct XKitDeveloperServicesGateway: DeveloperServicesGateway {
         }
     }
 
+    func listBundleSummaries() async throws -> [DeveloperBundleSummary] {
+        try await call(.listBundles) { api in
+            var result: [DeveloperBundleSummary] = []
+            for try await page in DeveloperAPIPages(request: {
+                try await api.bundleIdsGetCollection().ok.body.json
+            }, next: { $0.links.next }) {
+                for bundle in page.data {
+                    guard !bundle.id.isEmpty, let identifier = bundle.attributes?.identifier, !identifier.isEmpty else {
+                        throw DeveloperServicesError.invalidResponse
+                    }
+                    result.append(.init(id: bundle.id, identifier: identifier, name: bundle.attributes?.name ?? identifier))
+                }
+            }
+            return result
+        }
+    }
+    func listProfileSummaries(bundleID: String) async throws -> [DeveloperProfileSummary] {
+        try await call(.listProfiles) { api in
+            var result: [DeveloperProfileSummary] = []
+            for try await page in DeveloperAPIPages(request: {
+                try await api.bundleIdsProfilesGetToManyRelated(path: .init(id: bundleID)).ok.body.json
+            }, next: { $0.links.next }) {
+                for profile in page.data {
+                    guard !profile.id.isEmpty else { throw DeveloperServicesError.invalidResponse }
+                    // Metadata only: profile bytes are not kept for the overview.
+                    let attributes = profile.attributes
+                    let state = attributes?.profileState
+                    let stateName = state?.value1?.rawValue ?? state?.value2
+                    result.append(.init(id: profile.id, name: attributes?.name ?? "描述文件",
+                        created: attributes?.createdDate, expiry: attributes?.expirationDate, active: stateName == "ACTIVE"))
+                }
+            }
+            return result
+        }
+    }
+    func listDeviceSummaries() async throws -> [DeveloperDeviceSummary] {
+        try await call(.listDevices) { api in
+            var result: [DeveloperDeviceSummary] = []
+            for try await page in DeveloperAPIPages(request: {
+                try await api.devicesGetCollection(query: .init(filter_lbrack_platform_rbrack_: [.ios])).ok.body.json
+            }, next: { $0.links.next }) {
+                for device in page.data {
+                    guard !device.id.isEmpty, let attributes = device.attributes, let udid = attributes.udid, !udid.isEmpty,
+                          let status = attributes.status else { throw DeveloperServicesError.invalidResponse }
+                    result.append(.init(id: device.id, name: attributes.name ?? "未命名设备", udid: udid, model: attributes.model,
+                        enabled: (status.value1?.rawValue ?? status.value2) == "ENABLED", added: attributes.addedDate))
+                }
+            }
+            return result
+        }
+    }
+
     private func call<T: Sendable>(_ step: DeveloperServicesStep,
                                    _ action: @Sendable (DeveloperAPIClient) async throws -> T) async throws -> T {
         do {

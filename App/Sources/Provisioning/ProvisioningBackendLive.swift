@@ -43,6 +43,31 @@ final class ProvisioningBackendLive: ProvisioningBackend, @unchecked Sendable {
         try check()
         return material
     }
+    func accountOverview(teamID: String, session: AppleAccountSession, store: any ProvisioningMaterialStoring,
+                         localCertificateIDs: Set<String>) async throws -> DeveloperAccountOverview {
+        try check()
+        let manager = DeveloperAccountManager(gateway: try developerServices(teamID: teamID, session: session),
+                                              store: store, now: { Date() })
+        let overview = try await manager.overview(localCertificateIDs: localCertificateIDs)
+        try check()
+        return overview
+    }
+    func revokeCertificate(_ certificate: CertificateRevocation, teamID: String, session: AppleAccountSession,
+                           store: any ProvisioningMaterialStoring) async throws {
+        try check()
+        let manager = DeveloperAccountManager(gateway: try developerServices(teamID: teamID, session: session),
+                                              store: store, now: { Date() })
+        try await manager.revoke(certificate)
+        try check()
+    }
+    private func developerServices(teamID: String, session: AppleAccountSession) throws -> XKitDeveloperServicesGateway {
+        guard session.providerID == configuration.providerID,
+              session.account.teams.contains(where: { $0.id == teamID }), session.token.expiry > Date() else {
+            throw ProvisioningError.invalidAccount
+        }
+        return XKitDeveloperServicesGateway(auth: .init(loginToken: session.token, teamID: .init(rawValue: teamID)),
+            provider: gateway.provider, client: gateway.client)
+    }
 }
 
 extension ProvisioningEngineLive {

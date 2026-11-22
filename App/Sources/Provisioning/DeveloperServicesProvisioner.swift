@@ -43,6 +43,7 @@ enum DeveloperServicesStep: String, Sendable {
     case listDevices = "查询设备"
     case registerDevice = "注册设备"
     case findBundle = "查询应用标识"
+    case listBundles = "查询应用标识列表"
     case createBundle = "注册应用标识"
     case readCapabilities = "查询应用权限"
     case listCertificates = "查询开发证书"
@@ -73,6 +74,11 @@ protocol DeveloperServicesGateway: Sendable {
     func revokeCertificate(id: String) async throws
     func listProfiles(bundleID: String) async throws -> [DeveloperProfile]
     func createDevelopmentProfile(bundleID: String, certificateID: String, deviceID: String) async throws -> DeveloperProfile
+    // Read-only account overview (certificate management page). Defaults in
+    // DeveloperAccountOverview.swift throw, so older test doubles still compile.
+    func listBundleSummaries() async throws -> [DeveloperBundleSummary]
+    func listProfileSummaries(bundleID: String) async throws -> [DeveloperProfileSummary]
+    func listDeviceSummaries() async throws -> [DeveloperDeviceSummary]
 }
 
 struct PendingSigningMaterial: Codable, Sendable {
