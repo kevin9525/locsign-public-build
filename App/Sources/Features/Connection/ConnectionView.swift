@@ -10,12 +10,11 @@ struct ConnectionView: View {
     @State private var importing = false
 
     var body: some View {
-        NavigationStack {
             Form {
                 Section {
                     Label("连接并验证这台手机", systemImage: "cable.connector")
                         .font(.headline)
-                    Text("这里用于排查连接问题。一键安装会自动验证设备，无需每次先来检测。配对文件与安装页共用。")
+                    Text("这里用于排查连接问题。签名安装会自动验证设备，无需每次先来检测。配对文件与签名页共用。")
                         .foregroundStyle(.secondary)
                 }
                 Section {
@@ -70,7 +69,7 @@ struct ConnectionView: View {
                     }
                 }
             }
-            .navigationTitle("设备连接")
+            .navigationTitle("连接检测")
             .fileImporter(isPresented: $importing, allowedContentTypes: [.item]) { result in
                 do { try model.importPairing(result.get()) }
                 catch {
@@ -78,7 +77,6 @@ struct ConnectionView: View {
                 }
             }
             .onDisappear { task?.cancel() }
-        }
     }
 
     private func start(pairing: Bool) {

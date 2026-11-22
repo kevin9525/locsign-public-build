@@ -18,3 +18,5 @@
 - 2026-11-22 修复 CI #78 编译失败：上一提交写入 `Vendor/zsign/src/bundle.cpp` 时文件在第 496 行被截断（缺约 265 行，C++ 报 expected '}'）。已从父提交 d8c31e0 取回完整文件并重新应用 `upstream.patch` 中的嵌套描述文件改动；截断文件与重建结果的前 496 行逐字节一致。同提交其他文件检查无截断
 - 2026-11-22 0.4.12（31）Apple ID 证书管理（参考 NB）：App 页与 Apple ID 设置新增"证书与 App ID 管理"，列出开发证书（标记 LocSign 使用中、可单独撤销）、App ID 与描述文件、已注册设备，并估算免费账号 7 天内剩余 App ID 额度。撤销前重读 Apple 列表，变化即停止；先失效本机材料再撤销。不删除 App ID/描述文件/设备。新增 `DeveloperAccountManagerTests`。Swift 未本地编译，待 CI 与真机（`docs/spike/2026-11-22-certificate-management.md`）
 - 2026-11-22 0.4.12（31）定位收藏与最近使用：实现 11-20 先行提交测试（`6cc3292`）的功能，修复 CI #79/#80 中 `LocationViewModelTests` 两项失败。收藏可命名/重命名/删除，最近 20 次成功应用自动记录，点选只填入坐标；保存原始坐标与坐标类型；损坏数据不被覆盖，历史写入失败不影响定位结果。移植私有仓库 `LocationPlacesStoreTests` 5 项与 `LocationViewModelTests` 4 项（`docs/spike/2026-11-22-location-places.md`）
+- 2026-11-22 CI #81（`caab4e4`）全部通过，交付 `LocSign-0.4.12-build31-unsigned.ipa`（25,585,893 字节，SHA256 `685c6bc8…7c3b`）；真机未验收
+- 2026-11-22 0.5.0（32）界面聚焦自签 + 定位：4 个标签改为签名 / 定位 / 设置；签名页加准备清单、分步进度、已签名 App 列表（含 LocSign 自身、到期标色、一键续签）；定位页加底部固定操作栏、横向常用地点卡片，少用选项收进"高级"；App 管理、连接检测、证书管理、续签开关移入设置。只改界面层（`docs/spike/2026-11-22-ui-focus.md`）
