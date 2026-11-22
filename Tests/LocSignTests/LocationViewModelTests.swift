@@ -5,6 +5,78 @@ import CoreLocation
 
 @MainActor
 final class LocationViewModelTests: XCTestCase {
+    func testFavoriteSelectionAfterRelaunchOnlyPrefillsThenAppliesCorrectGPSCoordinate() async throws {
+        let fixture = try setup()
+        fixture.model.selectSearchCoordinate(.init(latitude: 31.839047, longitude: 118.815859), countryCode: "CN", name: "示例地点")
+        try fixture.model.saveFavorite(name: "常用地点")
+        let freshController = LocationControllerFixture()
+        let reopened = LocationViewModel(settings: fixture.settings, controller: freshController)
+        reopened.selectPlace(try XCTUnwrap(reopened.places.favorites.first))
+        XCTAssertEqual(reopened.latitude, "31.839047")
+        XCTAssertEqual(reopened.longitude, "118.815859")
+        XCTAssertEqual(reopened.inputSystem, .gcj02)
+        XCTAssertEqual(reopened.mapRegion, .mainlandChina)
+        XCTAssertEqual(reopened.selected?.latitude, 31.839047)
+        XCTAssertEqual(reopened.selectedPlaceName, "常用地点")
+        XCTAssertTrue(reopened.places.recents.isEmpty)
+        XCTAssertTrue(freshController.setRequests.isEmpty)
+        XCTAssertEqual(freshController.clearCalls, 0)
+        XCTAssertFalse(reopened.status.contains("设备已接受"))
+        await perform(reopened) { reopened.apply() }
+        XCTAssertEqual(try XCTUnwrap(freshController.setRequests.first?.coordinate.latitude), 31.841097105, accuracy: 0.00000001)
+        XCTAssertEqual(try XCTUnwrap(freshController.setRequests.first?.coordinate.longitude), 118.810721382, accuracy: 0.00000001)
+        XCTAssertEqual(reopened.places.recents.first?.name, "常用地点")
+    }
+
+    func testEditedCoordinatesDoNotKeepPreviousPlaceName() async throws {
+        let fixture = try setup()
+        fixture.model.selectSearchCoordinate(.init(latitude: 31, longitude: 118), countryCode: "US", name: "旧地点")
+        XCTAssertEqual(fixture.model.selectedPlaceName, "旧地点")
+        fixture.model.latitude = "32"
+        XCTAssertNil(fixture.model.selectedPlaceName)
+        await perform(fixture.model) { fixture.model.apply() }
+        XCTAssertNotEqual(fixture.model.places.recents.first?.name, "旧地点")
+        XCTAssertEqual(fixture.model.places.recents.first?.latitude, 32)
+        fixture.model.selectSearchCoordinate(.init(latitude: 31, longitude: 118), countryCode: "CN", name: "坐标系地点")
+        fixture.model.setInputSystem(.wgs84)
+        XCTAssertNil(fixture.model.selectedPlaceName)
+    }
+
+    func testCancelledApplyDoesNotAddHistoryAndBusySelectionCannotChangeTarget() async throws {
+        let fixture = try setup(delayedSet: true)
+        enterValidCoordinate(fixture.model)
+        try fixture.model.saveFavorite(name: "收藏")
+        let favorite = try XCTUnwrap(fixture.model.places.favorites.first)
+        fixture.model.latitude = "32"
+        let finished = expectation(description: "Cancelled apply finished")
+        let observation = idleObservation(fixture.model, finished: finished)
+        defer { observation.cancel(); fixture.controller.releaseSet() }
+        fixture.model.apply()
+        await fulfillment(of: [fixture.controller.setStarted], timeout: 5)
+        fixture.model.selectPlace(favorite)
+        XCTAssertEqual(fixture.model.latitude, "32")
+        XCTAssertThrowsError(try fixture.model.saveFavorite(name: "操作中"))
+        fixture.model.cancel()
+        fixture.controller.releaseSet()
+        await fulfillment(of: [finished], timeout: 5)
+        XCTAssertTrue(fixture.model.places.recents.isEmpty)
+        XCTAssertEqual(fixture.model.places.favorites.count, 1)
+    }
+
+    func testCorruptHistoryDoesNotTurnSuccessfulDeviceApplyIntoFailure() async throws {
+        let fixture = try setup()
+        let corrupt = Data("invalid".utf8)
+        fixture.settings.defaults.set(corrupt, forKey: "location.savedPlaces.v1")
+        let model = LocationViewModel(settings: fixture.settings, controller: fixture.controller)
+        enterValidCoordinate(model)
+        await perform(model) { model.apply() }
+        XCTAssertTrue(model.status.contains("设备已接受"))
+        XCTAssertNil(model.error)
+        XCTAssertNotNil(model.placesMessage)
+        XCTAssertTrue(model.places.recents.isEmpty)
+        XCTAssertEqual(fixture.settings.defaults.data(forKey: "location.savedPlaces.v1"), corrupt)
+    }
+
     func testSuccessfulApplyPersistsOriginalCoordinatesAndSystemInRecentHistory() async throws {
         let fixture = try setup()
         fixture.model.selectSearchCoordinate(.init(latitude: 31.839047, longitude: 118.815859), countryCode: "CN")

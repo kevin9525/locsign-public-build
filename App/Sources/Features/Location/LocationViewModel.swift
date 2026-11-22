@@ -11,8 +11,8 @@ enum LocationConnectionMode: String, CaseIterable, Identifiable {
 
 @MainActor
 final class LocationViewModel: ObservableObject {
-    @Published var latitude = ""
-    @Published var longitude = ""
+    @Published var latitude = "" { didSet { dropPlaceNameIfEdited() } }
+    @Published var longitude = "" { didSet { dropPlaceNameIfEdited() } }
     @Published var searchText = ""
     @Published private(set) var inputSystem: LocationCoordinateSystem = .wgs84
     @Published private(set) var mapRegion: LocationMapRegion = .mainlandChina
@@ -27,6 +27,12 @@ final class LocationViewModel: ObservableObject {
     @Published private(set) var cellularRestoreWarning: String?
     @Published private(set) var connectionMode: LocationConnectionMode
     @Published private(set) var restorationNotice: String?
+    /// Name of the place the fields came from; cleared when the fields are edited.
+    @Published private(set) var selectedPlaceName: String?
+    /// Problems saving favorites/history. Never replaces a device result.
+    @Published private(set) var placesMessage: String?
+    let places: LocationPlacesStore
+    private var namedFields: (latitude: String, longitude: String)?
     private let settings: InstallationSettings
     private let controller: any DeviceLocationControlling
     private let networkAssist: LocationNetworkAssist
@@ -41,6 +47,7 @@ final class LocationViewModel: ObservableObject {
          networkAssist: LocationNetworkAssist? = nil) {
         let controller = controller ?? DeviceLocationController()
         self.settings = settings; self.controller = controller
+        places = LocationPlacesStore(defaults: settings.defaults)
         connectionMode = settings.defaults.string(forKey: "location.connectionMode")
             .flatMap(LocationConnectionMode.init(rawValue:)) ?? .direct
         let runner = LocationShortcutRunner()
@@ -67,22 +74,71 @@ final class LocationViewModel: ObservableObject {
            let point = try? LocationCoordinate(latitude: lat, longitude: lon) {
             storeSelection(point)
         }
+        placesMessage = places.loadError
     }
     func selectMapCoordinate(_ point: CLLocationCoordinate2D) {
         guard !isBusy, let coordinate = try? LocationCoordinate(latitude: point.latitude, longitude: point.longitude) else { return }
         inputSystem = mapRegion.coordinateSystem
         storeSelection(coordinate)
     }
-    func selectSearchCoordinate(_ point: CLLocationCoordinate2D, countryCode: String?) {
+    func selectSearchCoordinate(_ point: CLLocationCoordinate2D, countryCode: String?, name: String? = nil) {
         guard !isBusy, let coordinate = try? LocationCoordinate(latitude: point.latitude, longitude: point.longitude) else { return }
         if let country = countryCode?.uppercased(), !country.isEmpty {
             mapRegion = country == "CN" ? .mainlandChina : .otherRegions
         }
         inputSystem = mapRegion.coordinateSystem
         storeSelection(coordinate)
+        setPlaceName(name)
+    }
+    /// Fills the fields from a saved place. Nothing is sent to the device until Apply.
+    func selectPlace(_ place: SavedLocationPlace) {
+        guard !isBusy, let coordinate = place.coordinate else { return }
+        mapRegion = place.mapRegion
+        inputSystem = place.coordinateSystem
+        storeSelection(coordinate)
+        setPlaceName(place.name)
+        placesMessage = places.loadError
+    }
+    func saveFavorite(name: String) throws {
+        guard !isBusy, settings.operationID == nil else { throw LocationPlacesError.busy }
+        let coordinate = try enteredCoordinate()
+        try places.saveFavorite(name: name, coordinate: coordinate, system: inputSystem, region: mapRegion)
+        setPlaceName(try LocationPlacesStore.normalizedName(name))
+        placesMessage = nil
+    }
+    func renameFavorite(_ place: SavedLocationPlace, to name: String) {
+        guard !isBusy else { return }
+        updatePlaces { try places.renameFavorite(id: place.id, name: name) }
+    }
+    func deleteFavorite(_ place: SavedLocationPlace) {
+        guard !isBusy else { return }
+        updatePlaces { try places.deleteFavorite(id: place.id) }
+    }
+    func deleteRecent(_ place: SavedLocationPlace) {
+        guard !isBusy else { return }
+        updatePlaces { try places.deleteRecent(id: place.id) }
+    }
+    func clearRecents() {
+        guard !isBusy else { return }
+        updatePlaces { try places.clearRecents() }
+    }
+    private func updatePlaces(_ change: () throws -> Void) {
+        do { try change(); placesMessage = nil }
+        catch { placesMessage = error.localizedDescription }
+    }
+    private func setPlaceName(_ name: String?) {
+        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        selectedPlaceName = trimmed?.isEmpty == false ? trimmed : nil
+        namedFields = selectedPlaceName == nil ? nil : (latitude, longitude)
+    }
+    private func dropPlaceNameIfEdited() {
+        guard let namedFields, namedFields.latitude != latitude || namedFields.longitude != longitude else { return }
+        self.namedFields = nil
+        selectedPlaceName = nil
     }
     func setInputSystem(_ system: LocationCoordinateSystem) {
         guard !isBusy else { return }
+        if system != inputSystem { setPlaceName(nil) }
         inputSystem = system
         selected = nil // The new interpretation is previewed explicitly or after apply.
     }
@@ -171,6 +227,8 @@ final class LocationViewModel: ObservableObject {
         let coordinate: LocationCoordinate?
         let input: LocationCoordinate?
         let system = inputSystem
+        let region = mapRegion
+        let placeName = selectedPlaceName
         do {
             input = try (clear ? nil : enteredCoordinate())
             coordinate = try input.map { try LocationCoordinateConversion.convert($0, from: system, to: .wgs84) }
@@ -202,6 +260,16 @@ final class LocationViewModel: ObservableObject {
                 if !clear, let input {
                     inputSystem = system
                     storeSelection(input)
+                    setPlaceName(placeName)
+                    // Only a confirmed, uninterrupted apply becomes history. A
+                    // history failure never turns the device result into an error.
+                    if sessionFailure == nil {
+                        let name = placeName ?? String(format: "%.6f, %.6f", input.latitude, input.longitude)
+                        do {
+                            try places.recordRecent(name: name, coordinate: input, system: system, region: region)
+                            placesMessage = nil
+                        } catch { placesMessage = "定位已应用，但未能记入最近使用：" + error.localizedDescription }
+                    }
                 }
             } catch {
                 await controller.disconnect()

@@ -1,12 +1,12 @@
 import Foundation
 
-enum LocationCoordinateSystem: String, CaseIterable, Identifiable {
+enum LocationCoordinateSystem: String, CaseIterable, Identifiable, Codable, Sendable {
     case wgs84, gcj02
     var id: String { rawValue }
     var title: String { self == .wgs84 ? "GPS 坐标（WGS-84）" : "大陆地图坐标（GCJ-02）" }
 }
 
-enum LocationMapRegion: String, CaseIterable, Identifiable {
+enum LocationMapRegion: String, CaseIterable, Identifiable, Codable, Sendable {
     case mainlandChina, otherRegions
     var id: String { rawValue }
     var title: String { self == .mainlandChina ? "中国大陆" : "其他地区（含港澳台）" }

@@ -33,7 +33,7 @@ struct LocationView: View {
                     ForEach(Array(model.searchResults.enumerated()), id: \.offset) { _, item in
                         Button {
                             let point = item.placemark.coordinate
-                            model.selectSearchCoordinate(point, countryCode: item.placemark.isoCountryCode)
+                            model.selectSearchCoordinate(point, countryCode: item.placemark.isoCountryCode, name: item.name)
                             position = .region(.init(center: point, span: .init(latitudeDelta: 0.02, longitudeDelta: 0.02)))
                         } label: {
                             VStack(alignment: .leading) {
@@ -53,6 +53,13 @@ struct LocationView: View {
                     }.textInputAutocapitalization(.never).autocorrectionDisabled().disabled(model.isBusy)
                     Button("在地图上显示坐标") {
                         model.selectManual()
+                        if let point = model.selected { position = .region(.init(center: point, span: .init(latitudeDelta: 0.02, longitudeDelta: 0.02))) }
+                    }
+                    if let name = model.selectedPlaceName {
+                        Label(name, systemImage: "mappin").font(.subheadline)
+                    }
+                    LocationPlacesSection(model: model, places: model.places) { place in
+                        model.selectPlace(place)
                         if let point = model.selected { position = .region(.init(center: point, span: .init(latitudeDelta: 0.02, longitudeDelta: 0.02))) }
                     }
                     Picker("定位连接方式", selection: Binding(get: { model.connectionMode }, set: model.setConnectionMode)) {
