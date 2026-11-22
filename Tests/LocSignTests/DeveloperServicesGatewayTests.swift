@@ -711,6 +711,77 @@ final class DeveloperServicesGatewayTests: XCTestCase {
         XCTAssertFalse(requests.contains { $0.override == "DELETE" && $0.path.contains("profiles") })
     }
 
+    // MARK: Account overview (certificate management page)
+
+    func testOverviewListsParseMetadataWithReadsOnly() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setListResponse("/v1/bundleIds", ["data": [
+            ["id": "b1", "type": "bundleIds", "attributes": ["identifier": "com.test.app", "name": "Test App", "platform": "IOS"]],
+        ]])
+        await transport.setListResponse("/v1/bundleIds/b1/profiles", ["data": [
+            ["id": "p1", "type": "profiles", "attributes": ["name": "LocSign A", "profileState": "ACTIVE",
+                "createdDate": "2035-01-01T00:00:00Z", "expirationDate": "2035-01-08T00:00:00.000Z"]],
+            ["id": "p2", "type": "profiles", "attributes": ["name": "LocSign B", "profileState": "INVALID"]],
+        ]])
+        await transport.setListResponse("/v1/devices", ["data": [
+            ["id": "d1", "type": "devices", "attributes": ["udid": "SYNTHETIC-UDID", "name": "Test iPhone", "model": "iPhone 15",
+                "status": "DISABLED", "platform": "IOS", "addedDate": "2035-01-01T00:00:00Z"]],
+        ]])
+        let gateway = try gateway(transport)
+
+        let bundles = try await gateway.listBundleSummaries()
+        XCTAssertEqual(bundles, [.init(id: "b1", identifier: "com.test.app", name: "Test App")])
+        let profiles = try await gateway.listProfileSummaries(bundleID: "b1")
+        XCTAssertEqual(profiles.map(\.id), ["p1", "p2"])
+        XCTAssertEqual(profiles.map(\.active), [true, false])
+        XCTAssertEqual(profiles.first?.created, Date(timeIntervalSince1970: 2_051_222_400))
+        XCTAssertEqual(profiles.first?.expiry, Date(timeIntervalSince1970: 2_051_827_200))
+        XCTAssertNil(profiles.last?.expiry)
+        let devices = try await gateway.listDeviceSummaries()
+        XCTAssertEqual(devices.map(\.name), ["Test iPhone"])
+        XCTAssertEqual(devices.first?.model, "iPhone 15")
+        XCTAssertEqual(devices.first?.enabled, false)
+        XCTAssertEqual(devices.first?.added, Date(timeIntervalSince1970: 2_051_222_400))
+
+        let requests = await transport.requests
+        XCTAssertEqual(requests.map(\.path), ["/v1/bundleIds", "/v1/bundleIds/b1/profiles", "/v1/devices"])
+        XCTAssertTrue(requests.allSatisfy { $0.override == "GET" && $0.token == "synthetic-token" && $0.team == "TEAM12345" })
+    }
+
+    func testOverviewListsFallBackForOptionalAttributes() async throws {
+        // Default fixture payloads carry only the required fields.
+        let transport = DeveloperAPIFixture()
+        let gateway = try gateway(transport)
+        let bundles = try await gateway.listBundleSummaries()
+        XCTAssertEqual(bundles.map(\.name), ["com.test.app.extra", "com.test.app"])
+        let profiles = try await gateway.listProfileSummaries(bundleID: "bundle")
+        XCTAssertEqual(profiles, [.init(id: "profile", name: "描述文件", created: nil, expiry: nil, active: false)])
+        let devices = try await gateway.listDeviceSummaries()
+        XCTAssertEqual(devices, [.init(id: "device", name: "未命名设备", udid: "SYNTHETIC-UDID", model: nil, enabled: true, added: nil)])
+    }
+
+    func testOverviewListsRejectIncompleteRecordsWithStepNames() async throws {
+        let transport = DeveloperAPIFixture()
+        await transport.setListResponse("/v1/bundleIds", ["data": [["id": "b1", "type": "bundleIds", "attributes": ["name": "No identifier"]]]])
+        await transport.setListResponse("/v1/devices", ["data": [["id": "d1", "type": "devices", "attributes": ["status": "ENABLED"]]]])
+        let gateway = try gateway(transport)
+        do { _ = try await gateway.listBundleSummaries(); XCTFail("App ID without identifier accepted") }
+        catch { XCTAssertEqual(error as? DeveloperServicesFailure, .init(step: .listBundles, reason: .invalidResponse)) }
+        do { _ = try await gateway.listDeviceSummaries(); XCTFail("Device without UDID accepted") }
+        catch { XCTAssertEqual(error as? DeveloperServicesFailure, .init(step: .listDevices, reason: .invalidResponse)) }
+    }
+
+    func testOverviewListsClassifyTransportFailureAndCancellation() async throws {
+        let failing = DeveloperAPIFixture()
+        await failing.setTransportFailure()
+        do { _ = try await gateway(failing).listBundleSummaries(); XCTFail("Network failure accepted") }
+        catch { XCTAssertEqual(error as? DeveloperServicesFailure, .init(step: .listBundles, reason: .network)) }
+        let cancelled = DeveloperAPIFixture()
+        await cancelled.setCancellation()
+        do { _ = try await gateway(cancelled).listProfileSummaries(bundleID: "bundle"); XCTFail("Cancellation accepted") }
+        catch { XCTAssertTrue(error is CancellationError) }
+    }
+
     private func certificateFixture() throws -> Data {
         try Data(contentsOf: XCTUnwrap(Bundle(for: Self.self).url(forResource: "profile-dev", withExtension: "cer")))
     }
@@ -759,6 +830,8 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
     private var capabilityStatus = 200
     private var legacyAppsPayload: Data?
     private var capabilityTransportCancel: Bool?
+    private var listOverrides: [String: [String: Any]] = [:]
+    func setListResponse(_ path: String, _ payload: [String: Any]) { listOverrides[path] = payload }
     private var legacyTransportCancel: Bool?
     func setCapabilityTransportFailure(cancel: Bool) { capabilityTransportCancel = cancel }
     func setLegacyTransportFailure(cancel: Bool) { legacyTransportCancel = cancel }
@@ -815,6 +888,11 @@ private actor DeveloperAPIFixture: HTTPClientProtocol, ClientTransport {
         let method = request.headerFields[.init("X-HTTP-Method-Override")!] ?? request.method.rawValue
         let path = request.path ?? ""
         requests.append(.init(host: baseURL.host, path: path, token: request.headerFields[.init("X-Apple-GS-Token")!], team: team, body: String(data: bytes, encoding: .utf8), override: method))
+        if method == "GET", let override = listOverrides[path] {
+            var complete = override
+            complete["links"] = ["self": "https://developerservices2.apple.com/services" + path]
+            return (.init(status: .ok, headerFields: [.contentType: "application/json"]), HTTPBody(try JSONSerialization.data(withJSONObject: complete)))
+        }
         if path == "/v1/bundleIds/bundle/bundleIdCapabilities", let cancel = capabilityTransportCancel {
             if cancel { throw CancellationError() }
             throw ProvisioningNetworkError.transport

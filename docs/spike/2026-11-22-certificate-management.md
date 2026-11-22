@@ -43,7 +43,12 @@
 - 证书序列号变化或已不存在时零修改；重读后被取消时零修改；本机失效失败时不发撤销请求；
 - 网关默认实现直接失败；UDID 掩码；"列表已变化"提示文案。
 
+`DeveloperServicesGatewayTests`（HTTP 层，合成响应）：
+- 3 个列表请求只发 GET，带登录 token 与团队；解析名称、型号、`ACTIVE`/`INVALID` 状态、`DISABLED` 设备、整秒与带毫秒的日期；描述文件不带内容也能解析；
+- 可选字段缺失时的回退（App ID 名称用标识、"描述文件"、"未命名设备"）；
+- 缺少标识或 UDID 的记录按"查询应用标识列表""查询设备"步骤报数据无效；网络失败与取消分别归类。
+
 ## 未验证
 
-- Windows 本地无 Xcode：Swift 未编译，XCTest 未运行，依赖 CI。网关新增的 3 个请求没有 HTTP 层测试（现有 `DeveloperAPIFixture` 未覆盖这些路径），字段取值依据 `Vendor/xtool` 生成的 `Types.swift`。
+- Windows 本地无 Xcode：Swift 未编译，XCTest 未运行，依赖 CI。字段取值依据 `Vendor/xtool` 生成的 `Types.swift`；HTTP 层由 `DeveloperServicesGatewayTests` 中的合成响应覆盖（见下），与 Apple 实际返回是否一致仍需真机核对。
 - 真机：免费账号下 `bundleIds` / `profiles` 列表是否返回完整字段（尤其 `createdDate`），以及撤销后列表刷新是否立即反映，需要在手机上核对。建议先撤销一张已过期或不再使用的证书。
