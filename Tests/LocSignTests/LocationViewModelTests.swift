@@ -52,6 +52,18 @@ final class LocationViewModelTests: XCTestCase {
         XCTAssertEqual(fixture.model.selectionState, .invalid)
     }
 
+    func testDifferentDisplayedCoordinatesDoNotMatchAcrossRoundingBoundary() async throws {
+        let fixture = try setup()
+        fixture.model.latitude = "31.0000004"
+        fixture.model.longitude = "118"
+        await perform(fixture.model) { fixture.model.apply() }
+        XCTAssertEqual(fixture.model.latitude, "31.000000")
+        XCTAssertEqual(fixture.model.selectionState, .accepted)
+        fixture.model.latitude = "31.0000008"
+        XCTAssertEqual(fixture.model.selectionState, .pending)
+        XCTAssertEqual(fixture.controller.setRequests.count, 1)
+    }
+
     func testFailedReplacementKeepsLastAcceptedHistoryWithoutClaimingItActive() async throws {
         let fixture = try setup()
         enterValidCoordinate(fixture.model)

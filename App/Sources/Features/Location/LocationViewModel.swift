@@ -22,8 +22,11 @@ struct AcceptedLocation: Equatable {
 
     var title: String { name ?? String(format: "%.6f, %.6f", latitude, longitude) }
     func matches(_ coordinate: LocationCoordinate, system: LocationCoordinateSystem) -> Bool {
-        self.system == system && abs(latitude - coordinate.latitude) < 0.0000005
-            && abs(longitude - coordinate.longitude) < 0.0000005
+        self.system == system && Self.displayValue(latitude) == Self.displayValue(coordinate.latitude)
+            && Self.displayValue(longitude) == Self.displayValue(coordinate.longitude)
+    }
+    private static func displayValue(_ value: Double) -> Double? {
+        Double(String(format: "%.6f", value))
     }
 }
 
