@@ -89,6 +89,9 @@ struct SettingsView: View {
 
                 Section("关于") {
                     LabeledContent("版本", value: versionText)
+                    NavigationLink {
+                        DiagnosticLogsView()
+                    } label: { Label("诊断日志", systemImage: "doc.text.magnifyingglass") }
                     NavigationLink("第三方许可") { ThirdPartyLicensesView() }
                 }
 

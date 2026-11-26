@@ -397,8 +397,9 @@ final class SigningViewModel: ObservableObject {
         guard generation == operation else { throw CancellationError() }
     }
     private func safeMessage(_ failure: Error) -> String {
-        if failure is CancellationError { return "操作已取消" }
-        return ProvisioningRedaction.redact(failure.localizedDescription)
+        let message = failure is CancellationError ? "操作已取消" : ProvisioningRedaction.redact(failure.localizedDescription)
+        AppLogger.log(failure is CancellationError ? .info : .warn, "signing", message)
+        return message
     }
 
     var busy: Bool {

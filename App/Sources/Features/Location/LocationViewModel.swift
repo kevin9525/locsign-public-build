@@ -67,6 +67,7 @@ final class LocationViewModel: ObservableObject {
                 self?.error = ProvisioningRedaction.redact(message)
                 self?.sessionFailure = ProvisioningRedaction.redact(message)
                 self?.restorationNotice = nil
+                AppLogger.log(.warn, "location", "定位连接中断：" + message)
             }
         }
         if let lat = settings.defaults.object(forKey: "location.latitude") as? Double,
@@ -237,6 +238,7 @@ final class LocationViewModel: ObservableObject {
         guard let token = settings.beginOperation() else { return }
         isBusy = true; error = nil; sessionFailure = nil; restorationNotice = nil
         status = clear ? "正在连接并恢复真实定位…" : "正在准备开发者服务并应用定位…"
+        AppLogger.log(.info, "location", clear ? "开始恢复真实定位" : "开始应用定位")
         let host = settings.host
         operation = Task {
             defer { isBusy = false; operation = nil; settings.endOperation(token) }
@@ -257,6 +259,9 @@ final class LocationViewModel: ObservableObject {
                 else if clear {
                     restorationNotice = "已停止发送模拟位置。其他 App 可能暂时显示旧地址，可点“重新定位”或重新打开 App；保存的城市和收货地址需手动切换。请以地图定位箭头获取的蓝点核对当前位置。"
                 }
+                if sessionFailure == nil {
+                    AppLogger.log(.info, "location", clear ? "设备已接受恢复真实定位" : "设备已接受模拟坐标")
+                }
                 if !clear, let input {
                     inputSystem = system
                     storeSelection(input)
@@ -275,6 +280,7 @@ final class LocationViewModel: ObservableObject {
                 await controller.disconnect()
                 status = "操作未完成，设备定位状态未确认"
                 self.error = error is CancellationError ? "操作已取消，可重新连接后恢复真实定位" : ProvisioningRedaction.redact(error.localizedDescription)
+                AppLogger.log(error is CancellationError ? .info : .warn, "location", self.error ?? "定位操作未完成")
             }
         }
     }
