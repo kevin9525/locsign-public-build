@@ -9,6 +9,24 @@ enum LocationConnectionMode: String, CaseIterable, Identifiable {
     var title: String { self == .direct ? "直接连接" : "无 Wi-Fi 辅助" }
 }
 
+enum LocationDeviceState: Equatable { case unknown, accepted, restored }
+enum LocationSelectionState: Equatable { case empty, invalid, pending, accepted, unconfirmed }
+
+/// A successful request in this process, not a reading of the device's GPS.
+struct AcceptedLocation: Equatable {
+    let latitude: Double
+    let longitude: Double
+    let system: LocationCoordinateSystem
+    let name: String?
+    let acceptedAt: Date
+
+    var title: String { name ?? String(format: "%.6f, %.6f", latitude, longitude) }
+    func matches(_ coordinate: LocationCoordinate, system: LocationCoordinateSystem) -> Bool {
+        self.system == system && abs(latitude - coordinate.latitude) < 0.0000005
+            && abs(longitude - coordinate.longitude) < 0.0000005
+    }
+}
+
 @MainActor
 final class LocationViewModel: ObservableObject {
     @Published var latitude = "" { didSet { dropPlaceNameIfEdited() } }
@@ -27,6 +45,8 @@ final class LocationViewModel: ObservableObject {
     @Published private(set) var cellularRestoreWarning: String?
     @Published private(set) var connectionMode: LocationConnectionMode
     @Published private(set) var restorationNotice: String?
+    @Published private(set) var deviceState: LocationDeviceState = .unknown
+    @Published private(set) var lastAcceptedLocation: AcceptedLocation?
     /// Name of the place the fields came from; cleared when the fields are edited.
     @Published private(set) var selectedPlaceName: String?
     /// Problems saving favorites/history. Never replaces a device result.
@@ -42,6 +62,30 @@ final class LocationViewModel: ObservableObject {
     private var searchID = UUID()
     private var operation: Task<Void, Never>?
     private var backgrounded = false
+    private var backgroundGeneration = 0
+    private var deviceGeneration = 0
+
+    var selectionState: LocationSelectionState {
+        if latitude.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            longitude.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .empty }
+        guard let coordinate = try? enteredCoordinate() else { return .invalid }
+        guard let accepted = lastAcceptedLocation, accepted.matches(coordinate, system: inputSystem) else { return .pending }
+        switch deviceState {
+        case .accepted: return .accepted
+        case .restored: return .pending
+        case .unknown: return .unconfirmed
+        }
+    }
+
+    var selectionMessage: String {
+        switch selectionState {
+        case .empty: return "先搜索地点或点击地图选点"
+        case .invalid: return "当前坐标无效，请检查纬度和经度"
+        case .pending: return "当前选点尚未应用"
+        case .accepted: return "设备已接受当前选点，请在地图中核对"
+        case .unconfirmed: return "当前选点曾提交，持续状态未确认"
+        }
+    }
 
     init(settings: InstallationSettings, controller: (any DeviceLocationControlling)? = nil,
          networkAssist: LocationNetworkAssist? = nil) {
@@ -67,6 +111,7 @@ final class LocationViewModel: ObservableObject {
                 self?.error = ProvisioningRedaction.redact(message)
                 self?.sessionFailure = ProvisioningRedaction.redact(message)
                 self?.restorationNotice = nil
+                self?.deviceState = .unknown
                 AppLogger.log(.warn, "location", "定位连接中断：" + message)
             }
         }
@@ -207,9 +252,16 @@ final class LocationViewModel: ObservableObject {
     func markForeground() { backgrounded = false }
     func markBackground() {
         backgrounded = true
-        if status.contains("设备已接受模拟坐标") { status = "应用进入后台，定位连接持续性未确认；回到前台后可重新应用或恢复" }
+        backgroundGeneration += 1
+        if lastAcceptedLocation != nil && deviceState != .restored {
+            deviceState = .unknown
+            status = "应用进入后台，定位连接持续性未确认；回到前台后可重新应用或恢复"
+        }
     }
     func settingsChanged() async {
+        deviceGeneration += 1
+        lastAcceptedLocation = nil
+        deviceState = .unknown
         operation?.cancel()
         await controller.disconnect()
         restorationNotice = nil
@@ -237,6 +289,9 @@ final class LocationViewModel: ObservableObject {
         catch { self.error = error.localizedDescription; return }
         guard let token = settings.beginOperation() else { return }
         isBusy = true; error = nil; sessionFailure = nil; restorationNotice = nil
+        deviceState = .unknown
+        let startedInBackgroundGeneration = backgroundGeneration
+        let startedForDeviceGeneration = deviceGeneration
         status = clear ? "正在连接并恢复真实定位…" : "正在准备开发者服务并应用定位…"
         AppLogger.log(.info, "location", clear ? "开始恢复真实定位" : "开始应用定位")
         let host = settings.host
@@ -253,10 +308,13 @@ final class LocationViewModel: ObservableObject {
                     try await networkAssist.run(host: host, operation: perform)
                 } else { try await perform() }
                 try Task.checkCancellation()
-                status = clear ? "设备已接受恢复真实定位" : backgrounded ? "应用进入后台，定位连接持续性未确认；回到前台后可重新应用或恢复" : "设备已接受模拟坐标，保持当前页面可维持连接"
+                guard startedForDeviceGeneration == deviceGeneration else { return }
+                let continuityUnknown = backgrounded || startedInBackgroundGeneration != backgroundGeneration
+                status = clear ? "设备已接受恢复真实定位" : continuityUnknown ? "应用进入后台，定位连接持续性未确认；回到前台后可重新应用或恢复" : "设备已接受模拟坐标，保持当前页面可维持连接"
                 if useNetworkAssist && !clear { status = "设备已接受本次模拟坐标；蜂窝数据切换后请在地图中核对，持续定位尚待确认" }
                 if let sessionFailure { status = "定位连接中断，当前设备状态未确认"; error = sessionFailure }
                 else if clear {
+                    deviceState = .restored
                     restorationNotice = "已停止发送模拟位置。其他 App 可能暂时显示旧地址，可点“重新定位”或重新打开 App；保存的城市和收货地址需手动切换。请以地图定位箭头获取的蓝点核对当前位置。"
                 }
                 if sessionFailure == nil {
@@ -269,6 +327,9 @@ final class LocationViewModel: ObservableObject {
                     // Only a confirmed, uninterrupted apply becomes history. A
                     // history failure never turns the device result into an error.
                     if sessionFailure == nil {
+                        lastAcceptedLocation = AcceptedLocation(latitude: input.latitude, longitude: input.longitude,
+                            system: system, name: placeName, acceptedAt: Date())
+                        deviceState = continuityUnknown || useNetworkAssist ? .unknown : .accepted
                         let name = placeName ?? String(format: "%.6f, %.6f", input.latitude, input.longitude)
                         do {
                             try places.recordRecent(name: name, coordinate: input, system: system, region: region)
@@ -278,6 +339,8 @@ final class LocationViewModel: ObservableObject {
                 }
             } catch {
                 await controller.disconnect()
+                guard startedForDeviceGeneration == deviceGeneration else { return }
+                deviceState = .unknown
                 status = "操作未完成，设备定位状态未确认"
                 self.error = error is CancellationError ? "操作已取消，可重新连接后恢复真实定位" : ProvisioningRedaction.redact(error.localizedDescription)
                 AppLogger.log(error is CancellationError ? .info : .warn, "location", self.error ?? "定位操作未完成")

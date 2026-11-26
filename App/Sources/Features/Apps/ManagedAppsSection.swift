@@ -126,6 +126,7 @@ struct ManagedAppsSection: View {
                         .buttonStyle(.bordered)
                 }
                 .disabled(busy || needsRelaunch)
+                if let app = managedSelf { detailLink(app) }
             }
             .padding(.vertical, 4)
             .contextMenu {
@@ -156,6 +157,7 @@ struct ManagedAppsSection: View {
             if let lastError = app.lastError {
                 Text(lastError).font(.caption).foregroundStyle(.red).lineLimit(3).textSelection(.enabled)
             }
+            detailLink(app)
             HStack {
                 Button("续签") { renew(app) }
                     .buttonStyle(.borderedProminent)
@@ -183,6 +185,14 @@ struct ManagedAppsSection: View {
         } else {
             Text("待确认").font(.caption).foregroundStyle(.orange)
         }
+    }
+
+    private func detailLink(_ app: ManagedApp) -> some View {
+        NavigationLink {
+            ManagedAppDetailView(appID: app.id, library: library, renewal: renewal,
+                                 settings: settings, account: account)
+        } label: { Label("续签详情", systemImage: "info.circle").font(.caption) }
+        .disabled(busy)
     }
 
     static func expiryText(_ remaining: TimeInterval) -> String {

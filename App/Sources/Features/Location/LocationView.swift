@@ -13,7 +13,7 @@ struct LocationView: View {
 
     private var locked: Bool { model.isBusy || settings.operationID != nil }
     private var applied: Bool {
-        model.status.contains("设备已接受模拟坐标") || model.status.contains("设备已接受本次模拟坐标")
+        model.selectionState == .accepted
     }
     private var statusIcon: String {
         if model.isBusy { return "hourglass" }
@@ -22,7 +22,8 @@ struct LocationView: View {
     }
     private var statusColor: Color {
         if model.error != nil { return .red }
-        return applied ? .green : .secondary
+        if applied { return .green }
+        return model.selectionState == .pending || model.selectionState == .unconfirmed ? .orange : .secondary
     }
     private var placeTitle: String {
         if let name = model.selectedPlaceName { return name }
@@ -145,13 +146,26 @@ struct LocationView: View {
             HStack(spacing: 10) {
                 Image(systemName: statusIcon).font(.title3).foregroundStyle(statusColor).frame(width: 26)
                 VStack(alignment: .leading, spacing: 2) {
+                    Text("当前选点").font(.caption2).foregroundStyle(.secondary)
                     Text(placeTitle).font(.subheadline.weight(.semibold)).lineLimit(1)
-                    Text(model.status).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    Text(model.isBusy ? model.status : model.selectionMessage)
+                        .font(.caption).foregroundStyle(model.isBusy ? Color.secondary : statusColor)
                 }
                 Spacer(minLength: 0)
                 if model.isBusy {
                     Button("取消", role: .cancel, action: model.cancel).font(.subheadline)
                 }
+            }
+            if let accepted = model.lastAcceptedLocation {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text("上次设备接受：\(accepted.title)").lineLimit(1)
+                    Spacer(minLength: 0)
+                    Text(accepted.acceptedAt, style: .time)
+                }
+                .font(.caption2).foregroundStyle(.secondary)
+            }
+            if !model.isBusy {
+                Text(model.status).font(.caption2).foregroundStyle(.secondary)
             }
             if let assist = model.networkAssistStatus {
                 Text(assist).font(.caption).foregroundStyle(.secondary).lineLimit(2)
@@ -172,6 +186,7 @@ struct LocationView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
+                .disabled(model.selectionState == .empty || model.selectionState == .invalid)
                 Button(action: model.restore) {
                     Label("恢复真实", systemImage: "location.slash")
                         .frame(maxWidth: .infinity)
