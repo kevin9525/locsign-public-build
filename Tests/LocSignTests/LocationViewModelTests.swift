@@ -5,6 +5,120 @@ import CoreLocation
 
 @MainActor
 final class LocationViewModelTests: XCTestCase {
+    func testSelectingAnotherSearchResultDoesNotBorrowPreviousAcceptance() async throws {
+        let fixture = try setup()
+        fixture.model.selectSearchCoordinate(.init(latitude: 31, longitude: 118), countryCode: "US", name: "地点 A")
+        await perform(fixture.model) { fixture.model.apply() }
+        XCTAssertEqual(fixture.model.selectionState, .accepted)
+        let accepted = try XCTUnwrap(fixture.model.lastAcceptedLocation)
+        fixture.model.selectSearchCoordinate(.init(latitude: 32, longitude: 119), countryCode: "US", name: "地点 B")
+        XCTAssertEqual(fixture.model.selectionState, .pending)
+        XCTAssertEqual(fixture.model.lastAcceptedLocation, accepted)
+        XCTAssertEqual(accepted.name, "地点 A")
+        XCTAssertEqual(fixture.model.selectedPlaceName, "地点 B")
+        XCTAssertEqual(fixture.controller.setRequests.count, 1)
+    }
+
+    func testMapManualFavoriteAndCoordinateSystemChangesRequireApply() async throws {
+        for method in 0..<4 {
+            let fixture = try setup()
+            fixture.model.selectSearchCoordinate(.init(latitude: 32, longitude: 119), countryCode: "US", name: "收藏 B")
+            try fixture.model.saveFavorite(name: "收藏 B")
+            let favorite = try XCTUnwrap(fixture.model.places.favorites.first)
+            fixture.model.selectSearchCoordinate(.init(latitude: 31, longitude: 118), countryCode: "US", name: "A")
+            await perform(fixture.model) { fixture.model.apply() }
+            switch method {
+            case 0: fixture.model.selectMapCoordinate(.init(latitude: 32, longitude: 119))
+            case 1: fixture.model.latitude = "32"
+            case 2: fixture.model.selectPlace(favorite)
+            default: fixture.model.setInputSystem(.gcj02)
+            }
+            XCTAssertEqual(fixture.model.selectionState, .pending, "selection method \(method)")
+            XCTAssertEqual(fixture.model.lastAcceptedLocation?.name, "A")
+            XCTAssertEqual(fixture.controller.setRequests.count, 1)
+        }
+    }
+
+    func testEquivalentNumericFormattingAndMapRegionKeepAcceptedSelection() async throws {
+        let fixture = try setup()
+        fixture.model.latitude = "31.123456789"
+        fixture.model.longitude = "118"
+        await perform(fixture.model) { fixture.model.apply() }
+        XCTAssertEqual(fixture.model.selectionState, .accepted, "Displayed six-digit rounding must still match the accepted request")
+        fixture.model.longitude = " 118.000000 "
+        fixture.model.setMapRegion(.mainlandChina)
+        XCTAssertEqual(fixture.model.selectionState, .accepted)
+        fixture.model.latitude = "not-a-number"
+        XCTAssertEqual(fixture.model.selectionState, .invalid)
+    }
+
+    func testDifferentDisplayedCoordinatesDoNotMatchAcrossRoundingBoundary() async throws {
+        let fixture = try setup()
+        fixture.model.latitude = "31.0000004"
+        fixture.model.longitude = "118"
+        await perform(fixture.model) { fixture.model.apply() }
+        XCTAssertEqual(fixture.model.latitude, "31.000000")
+        XCTAssertEqual(fixture.model.selectionState, .accepted)
+        fixture.model.latitude = "31.0000008"
+        XCTAssertEqual(fixture.model.selectionState, .pending)
+        XCTAssertEqual(fixture.controller.setRequests.count, 1)
+    }
+
+    func testFailedReplacementKeepsLastAcceptedHistoryWithoutClaimingItActive() async throws {
+        let fixture = try setup()
+        enterValidCoordinate(fixture.model)
+        await perform(fixture.model) { fixture.model.apply() }
+        let accepted = try XCTUnwrap(fixture.model.lastAcceptedLocation)
+        fixture.model.latitude = "32"
+        fixture.controller.setError = URLError(.networkConnectionLost)
+        await perform(fixture.model) { fixture.model.apply() }
+        XCTAssertEqual(fixture.model.lastAcceptedLocation, accepted)
+        XCTAssertEqual(fixture.model.deviceState, .unknown)
+        XCTAssertEqual(fixture.model.selectionState, .pending)
+        enterValidCoordinate(fixture.model)
+        XCTAssertEqual(fixture.model.selectionState, .unconfirmed)
+    }
+
+    func testRestoreMakesSelectedLocationPendingAndRelaunchKeepsNoAcceptanceClaim() async throws {
+        let fixture = try setup()
+        enterValidCoordinate(fixture.model)
+        await perform(fixture.model) { fixture.model.apply() }
+        await perform(fixture.model) { fixture.model.restore() }
+        XCTAssertEqual(fixture.model.deviceState, .restored)
+        XCTAssertEqual(fixture.model.selectionState, .pending)
+        XCTAssertNotNil(fixture.model.lastAcceptedLocation, "The last request is history, not a current device claim")
+        let reopened = LocationViewModel(settings: fixture.settings, controller: LocationControllerFixture())
+        XCTAssertEqual(reopened.selectionState, .pending)
+        XCTAssertNil(reopened.lastAcceptedLocation)
+    }
+
+    func testBackgroundRoundTripDuringApplyDoesNotRestoreGreenState() async throws {
+        let fixture = try setup(delayedSet: true)
+        enterValidCoordinate(fixture.model)
+        let finished = expectation(description: "Apply after background round trip")
+        let observation = idleObservation(fixture.model, finished: finished)
+        defer { observation.cancel(); fixture.controller.releaseSet() }
+        fixture.model.apply()
+        await fulfillment(of: [fixture.controller.setStarted], timeout: 5)
+        fixture.model.markBackground()
+        fixture.model.markForeground()
+        fixture.controller.releaseSet()
+        await fulfillment(of: [finished], timeout: 5)
+        XCTAssertEqual(fixture.model.deviceState, .unknown)
+        XCTAssertEqual(fixture.model.selectionState, .unconfirmed)
+        XCTAssertNotNil(fixture.model.lastAcceptedLocation)
+    }
+
+    func testDeviceSettingsChangeDropsPreviousDeviceAcceptance() async throws {
+        let fixture = try setup()
+        enterValidCoordinate(fixture.model)
+        await perform(fixture.model) { fixture.model.apply() }
+        await fixture.model.settingsChanged()
+        XCTAssertNil(fixture.model.lastAcceptedLocation)
+        XCTAssertEqual(fixture.model.selectionState, .pending)
+        XCTAssertEqual(fixture.model.deviceState, .unknown)
+    }
+
     func testFavoriteSelectionAfterRelaunchOnlyPrefillsThenAppliesCorrectGPSCoordinate() async throws {
         let fixture = try setup()
         fixture.model.selectSearchCoordinate(.init(latitude: 31.839047, longitude: 118.815859), countryCode: "CN", name: "示例地点")
@@ -61,6 +175,8 @@ final class LocationViewModelTests: XCTestCase {
         await fulfillment(of: [finished], timeout: 5)
         XCTAssertTrue(fixture.model.places.recents.isEmpty)
         XCTAssertEqual(fixture.model.places.favorites.count, 1)
+        XCTAssertNil(fixture.model.lastAcceptedLocation)
+        XCTAssertEqual(fixture.model.deviceState, .unknown)
     }
 
     func testCorruptHistoryDoesNotTurnSuccessfulDeviceApplyIntoFailure() async throws {
@@ -225,6 +341,8 @@ final class LocationViewModelTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(fixture.controller.setRequests.first?.coordinate.latitude), 31.841097105, accuracy: 0.00000001)
         XCTAssertFalse(model.requiresCellularRestore)
         XCTAssertNil(fixture.settings.operationID)
+        XCTAssertEqual(model.selectionState, .unconfirmed, "Cellular switching cannot promise a sustained location session")
+        XCTAssertNotNil(model.lastAcceptedLocation)
     }
 
     func testAssistedFailureDoesNotPersistSelectionAndKeepsRecoveryVisible() async throws {
@@ -415,6 +533,8 @@ final class LocationViewModelTests: XCTestCase {
         XCTAssertFalse(fixture.model.isBusy)
         XCTAssertEqual(fixture.controller.setRequests.count, 1)
         XCTAssertEqual(fixture.controller.clearCalls, 0)
+        XCTAssertEqual(fixture.model.selectionState, .unconfirmed)
+        XCTAssertEqual(fixture.model.deviceState, .unknown)
     }
 
     func testBackgroundTransitionMarksAcceptedSimulationUnknownAndRelaunchDoesNotRestoreClaim() async throws {
@@ -424,6 +544,8 @@ final class LocationViewModelTests: XCTestCase {
         XCTAssertTrue(fixture.model.status.contains("设备已接受模拟坐标"))
 
         fixture.model.markBackground()
+        fixture.model.markForeground()
+        XCTAssertEqual(fixture.model.selectionState, .unconfirmed)
         XCTAssertTrue(fixture.model.status.contains("未确认"))
         XCTAssertFalse(fixture.model.status.contains("设备已接受"))
         XCTAssertEqual(fixture.model.selected?.latitude, 31.2304)
