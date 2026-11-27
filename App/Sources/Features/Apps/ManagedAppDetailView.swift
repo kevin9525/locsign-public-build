@@ -61,7 +61,7 @@ struct ManagedAppDetailView: View {
             }
             if settings.pairing == nil { Text("尚未导入配对文件，请到签名页完成准备。") }
             Text("需要立即重试时，返回签名页点此 App 的“续签”。")
-            NavigationLink("连接检测") { ConnectionView(settings: settings) }
+            NavigationLink("连接自检") { ConnectionView(settings: settings) }
             NavigationLink("诊断日志") { DiagnosticLogsView() }
         } header: { Text("处理与排查") }
     }

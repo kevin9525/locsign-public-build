@@ -50,7 +50,7 @@ final class InstallationSettingsTests: XCTestCase {
     func testSharedOperationBlocksPairingReplacementAndDiagnostics() async throws {
         let (settings, _, _) = try makeSettings()
         try settings.savePairing(data: Data(contentsOf: fixture()), name: "phone.plist")
-        let connection = ConnectionViewModel(settings: settings, checkPairing: { _, _ in
+        let connection = ConnectionViewModel(settings: settings, checkPairing: { _, _, _ in
             XCTFail("Diagnostics must not race an installation")
             throw CancellationError()
         })

@@ -64,6 +64,8 @@ struct SigningView: View {
                         Label { Text(error).textSelection(.enabled) } icon: {
                             Image(systemName: "exclamationmark.triangle.fill")
                         }.foregroundStyle(.red)
+                        NavigationLink("连接自检") { ConnectionView(settings: settings) }.disabled(busy)
+                        NavigationLink("诊断日志") { DiagnosticLogsView() }.disabled(busy)
                     }
                 }
                 if let appsSection, !isSelfRenewal { appsSection }
@@ -141,6 +143,9 @@ struct SigningView: View {
                     }
                 }
             }
+            NavigationLink {
+                ConnectionView(settings: settings)
+            } label: { Label("连接自检", systemImage: "cable.connector") }
         } header: { Text("准备") } footer: {
             Text("保持手机解锁、LocalDevVPN 开启。设备地址一般保持默认 10.7.0.1。")
         }

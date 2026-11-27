@@ -2,6 +2,63 @@ import XCTest
 @testable import LocSign
 
 final class PairedDeviceProbeTests: XCTestCase {
+    @MainActor
+    func testProgressOnlyPassesStagesAfterTheirWorkCompletes() async throws {
+        let transport = ProbeLockdownTransport()
+        var events: [String] = []
+        let probe = PairedDeviceProbe(makeTransport: { _ in transport }, verifyService: { _, endpoint, _ in
+            events.append("connected-\(endpoint.port)")
+        })
+        _ = try await probe.check(host: "10.7.0.1", pairingData: fixture()) { stage, passed in
+            events.append("\(stage.rawValue)-\(passed)")
+        }
+        XCTAssertEqual(events, ["pairingFile-false", "pairingFile-true",
+            "authentication-false", "authentication-true", "fileService-false", "connected-1234",
+            "fileService-true", "installationService-false", "connected-5678", "installationService-true"])
+        XCTAssertTrue(transport.closed)
+    }
+
+    @MainActor
+    func testServiceFailureRetainsTypedStageAndNeverReportsItPassed() async throws {
+        let transport = ProbeLockdownTransport()
+        var passed: [PairedProbeStage] = []
+        let probe = PairedDeviceProbe(makeTransport: { _ in transport }, verifyService: { _, endpoint, _ in
+            if endpoint.port == 5678 { throw LocSignError.install("测试服务拒绝") }
+        })
+        do {
+            _ = try await probe.check(host: "10.7.0.1", pairingData: fixture()) { stage, complete in
+                if complete { passed.append(stage) }
+            }
+            XCTFail("Unavailable service must fail")
+        } catch let failure as PairedProbeFailure {
+            XCTAssertEqual(failure.stage, .installationService)
+            XCTAssertTrue(failure.detail.contains("测试服务拒绝"))
+        }
+        XCTAssertEqual(passed, [.pairingFile, .authentication, .fileService])
+        XCTAssertTrue(transport.closed)
+    }
+
+    @MainActor
+    func testCancellationAfterProgressStopsBeforeStartingTheService() async throws {
+        let transport = ProbeLockdownTransport()
+        var stages: [PairedProbeStage] = []
+        let probe = PairedDeviceProbe(makeTransport: { _ in transport }, verifyService: { _, _, _ in
+            XCTFail("Cancellation must stop service verification")
+        })
+        let data = try fixture()
+        let task = Task { @MainActor in
+            try await probe.check(host: "10.7.0.1", pairingData: data) { stage, passed in
+                stages.append(stage)
+                if stage == .fileService && !passed { withUnsafeCurrentTask { $0?.cancel() } }
+            }
+        }
+        do { _ = try await task.value; XCTFail("Cancellation must not succeed") }
+        catch is CancellationError { }
+        XCTAssertFalse(transport.requests.contains { $0["Request"] as? String == "StartService" })
+        XCTAssertFalse(stages.contains(.installationService))
+        XCTAssertTrue(transport.closed)
+    }
+
     func testAuthenticatesAndConnectsToBothServicesWithoutInstalling() async throws {
         let transport = ProbeLockdownTransport()
         var endpoints: [LockdownServiceEndpoint] = []
