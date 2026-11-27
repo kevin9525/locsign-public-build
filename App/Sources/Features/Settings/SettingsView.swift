@@ -75,7 +75,7 @@ struct SettingsView: View {
                 Section {
                     NavigationLink {
                         ConnectionView(settings: settings)
-                    } label: { Label("连接检测", systemImage: "cable.connector") }
+                    } label: { Label("连接自检", systemImage: "cable.connector") }
                     NavigationLink {
                         DeviceAppsView(settings: settings, library: library)
                     } label: { Label("设备上的 App", systemImage: "square.grid.2x2") }

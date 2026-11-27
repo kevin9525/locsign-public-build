@@ -7,8 +7,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "0.5.3"
-    CURRENT_PROJECT_VERSION: "35"
+    MARKETING_VERSION: "0.5.4"
+    CURRENT_PROJECT_VERSION: "36"
     GENERATE_INFOPLIST_FILE: NO
 packages:
   OpenSSL:

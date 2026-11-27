@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import Network
 
 @MainActor
 final class ConnectionViewModel: ObservableObject {
@@ -19,17 +20,21 @@ final class ConnectionViewModel: ObservableObject {
     @Published private(set) var reachable = false
     @Published private(set) var pairingName = "未选择"
     @Published private(set) var pairedResult: PairedDeviceProbeResult?
+    @Published private(set) var steps: [ConnectionCheckStep: ConnectionCheckState] = [:]
+    @Published private(set) var failedStep: ConnectionCheckStep?
+    @Published private(set) var checkedAt: Date?
+    private var resultID = UUID()
     private var pairingData: Data?
     private let settings: InstallationSettings?
     private var subscriptions = Set<AnyCancellable>()
     private var syncingSettings = false
     private let reachabilityCheck: (String) async throws -> ConnectionProbeResult
-    private let pairingCheck: (String, Data) async throws -> PairedDeviceProbeResult
+    private let pairingCheck: (String, Data, @escaping PairedProbeProgress) async throws -> PairedDeviceProbeResult
 
     init(settings: InstallationSettings? = nil, checkReachability: @escaping (String) async throws -> ConnectionProbeResult = {
         try await DeviceConnectionProbe().check(host: $0)
-    }, checkPairing: @escaping (String, Data) async throws -> PairedDeviceProbeResult = {
-        try await PairedDeviceProbe().check(host: $0, pairingData: $1)
+    }, checkPairing: @escaping (String, Data, @escaping PairedProbeProgress) async throws -> PairedDeviceProbeResult = {
+        try await PairedDeviceProbe().check(host: $0, pairingData: $1, progress: $2)
     }) {
         self.reachabilityCheck = checkReachability
         self.pairingCheck = checkPairing
@@ -48,12 +53,14 @@ final class ConnectionViewModel: ObservableObject {
                 self.syncingSettings = false
             }.store(in: &subscriptions)
             settings.$operationID.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &subscriptions)
-            if let error = settings.loadError { message = error }
+            if let error = settings.loadError { message = ProvisioningRedaction.redact(error) }
         }
     }
 
     var deviceBusy: Bool { isChecking || settings?.operationID != nil }
+    var canRunSelfCheck: Bool { !deviceBusy }
     var canCheckPairing: Bool { pairingData != nil && !deviceBusy && !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    func state(for step: ConnectionCheckStep) -> ConnectionCheckState { steps[step] ?? .pending }
 
     func importPairing(_ url: URL) throws {
         guard !deviceBusy else { return }
@@ -72,46 +79,97 @@ final class ConnectionViewModel: ObservableObject {
         pairingName = url.lastPathComponent
     }
 
-    func checkReachability() async {
+    func checkReachability() async { await runCheck(includePairing: false) }
+
+    /// One check holds the shared device lock across reachability and authentication.
+    func checkPairing() async { await runCheck(includePairing: true) }
+
+    private func runCheck(includePairing: Bool) async {
         guard !deviceBusy else { return }
         let lock = settings?.beginOperation()
-        defer { if let lock { settings?.endOperation(lock) } }
+        guard settings == nil || lock != nil else { return }
         clearResult()
+        let id = resultID
+        let address = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        let data = pairingData
+        let pairingLoadError = settings?.loadError
         isChecking = true
-        defer { isChecking = false }
+        defer {
+            isChecking = false
+            if let lock { settings?.endOperation(lock) }
+        }
+        var activeStep = ConnectionCheckStep.address
+        steps[activeStep] = .checking
+        AppLogger.log(.info, "connection", includePairing ? "开始连接自检" : "开始设备响应检查")
         do {
-            let result = try await reachabilityCheck(host)
             try Task.checkCancellation()
+            guard IPv4Address(address) != nil || IPv6Address(address) != nil else {
+                throw LocSignError.install("请输入有效的设备 IP 地址")
+            }
+            steps[.address] = .passed
+            activeStep = .reachability
+            steps[activeStep] = .checking
+            let response = try await reachabilityCheck(address)
+            try Task.checkCancellation()
+            guard resultID == id else { return }
             reachable = true
-            message = String(format: "设备服务已响应（%.2f 秒）。可继续验证配对。", result.elapsed)
-        } catch is CancellationError { message = "已取消检测" }
-        catch { message = error.localizedDescription }
-    }
-
-    func checkPairing() async {
-        guard canCheckPairing, let pairingData else { return }
-        let lock = settings?.beginOperation()
-        defer { if let lock { settings?.endOperation(lock) } }
-        clearResult()
-        isChecking = true
-        defer { isChecking = false }
-        do {
-            let result = try await pairingCheck(host, pairingData)
-            try Task.checkCancellation()
-            pairedResult = result
-            message = String(format: "配对和服务连接检查完成（%.2f 秒）。", result.elapsed)
-        } catch is CancellationError { message = "已取消检查" }
-        catch { message = error.localizedDescription }
+            steps[.reachability] = .passed
+            if includePairing {
+                activeStep = .pairingFile
+                steps[activeStep] = .checking
+                if let pairingLoadError { throw LocSignError.install(pairingLoadError) }
+                guard let data else { throw LocSignError.install("设备服务已响应，请先导入这台手机的配对文件") }
+                let result = try await pairingCheck(address, data) { [weak self] stage, passed in
+                    guard let self, self.resultID == id, self.isChecking, !Task.isCancelled else { return }
+                    let step = ConnectionCheckStep(stage)
+                    activeStep = step
+                    self.steps[step] = passed ? .passed : .checking
+                }
+                try Task.checkCancellation()
+                guard resultID == id else { return }
+                pairedResult = result
+                for step in ConnectionCheckStep.allCases { steps[step] = .passed }
+                message = String(format: "本次自检通过（%.2f 秒）：配对认证与安装服务连接正常。", response.elapsed + result.elapsed)
+            } else {
+                skipPendingSteps()
+                message = String(format: "设备服务已响应（%.2f 秒），配对和安装服务尚未检查。", response.elapsed)
+            }
+            checkedAt = Date()
+            AppLogger.log(.info, "connection", message)
+        } catch {
+            guard resultID == id else { return }
+            let cancelled = error is CancellationError || Task.isCancelled
+            let failed = (error as? PairedProbeFailure).map { ConnectionCheckStep($0.stage) }
+                ?? ConnectionCheckStep.allCases.first(where: { steps[$0] == .checking }) ?? activeStep
+            steps[failed] = cancelled ? .cancelled : .failed
+            failedStep = cancelled ? nil : failed
+            pairedResult = nil
+            skipPendingSteps()
+            message = cancelled ? "检查已取消，未完成本次自检。" : ProvisioningRedaction.redact(error.localizedDescription)
+            checkedAt = Date()
+            AppLogger.log(cancelled ? .info : .warn, "connection", failed.title + "：" + message)
+        }
     }
 
     func reportImportError(_ error: Error) {
         clearResult()
-        message = error.localizedDescription
+        failedStep = .pairingFile
+        message = ProvisioningRedaction.redact(error.localizedDescription)
     }
 
     private func clearResult() {
+        resultID = UUID()
         reachable = false
         pairedResult = nil
+        steps = [:]
+        failedStep = nil
+        checkedAt = nil
         message = ""
+    }
+
+    private func skipPendingSteps() {
+        for step in ConnectionCheckStep.allCases where state(for: step) == .pending || state(for: step) == .checking {
+            steps[step] = .skipped
+        }
     }
 }

@@ -53,6 +53,14 @@ struct LocationView: View {
             .safeAreaInset(edge: .bottom) { actionBar }
             .navigationTitle("虚拟定位")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink {
+                        ConnectionView(settings: settings)
+                    } label: { Label("连接自检", systemImage: "cable.connector") }
+                    .disabled(locked)
+                }
+            }
             .onAppear {
                 if !centered { centered = true; focus(on: model.selected) }
             }
@@ -175,6 +183,11 @@ struct LocationView: View {
             }
             if let error = model.error {
                 Text(error).font(.caption).foregroundStyle(.red).lineLimit(3).textSelection(.enabled)
+                HStack {
+                    NavigationLink("连接自检") { ConnectionView(settings: settings) }
+                    NavigationLink("诊断日志") { DiagnosticLogsView() }
+                }
+                .font(.caption).disabled(locked)
             }
             if let notice = model.restorationNotice {
                 Text(notice).font(.caption2).foregroundStyle(.secondary).lineLimit(3)
