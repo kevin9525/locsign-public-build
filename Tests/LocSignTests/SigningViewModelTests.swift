@@ -4,6 +4,32 @@ import ZIPFoundation
 
 final class SigningViewModelTests: XCTestCase {
     @MainActor
+    func testCancelledIPAImportPreservesPreviousSelectionAndSigningChoice() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appendingPathComponent("first.ipa")
+        let second = root.appendingPathComponent("second.ipa")
+        try Data("first source".utf8).write(to: first)
+        try Data("second source".utf8).write(to: second)
+        let model = SigningViewModel()
+        await model.importFile(first, as: .ipa)
+        model.usesPersonalBundleID = true
+        model.personalBundleID = "com.personal.first"
+
+        let importing = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            await model.importFile(second, as: .ipa)
+        }
+        await importing.value
+
+        XCTAssertEqual(model.ipaName, "first.ipa")
+        XCTAssertTrue(model.usesPersonalBundleID)
+        XCTAssertEqual(model.personalBundleID, "com.personal.first")
+        XCTAssertFalse(model.isImporting)
+    }
+
+    @MainActor
     func testManualOutputUsesActualBundleInsteadOfAutomaticIdentifierForPendingGuard() async throws {
         for isSelf in [true, false] {
             let runningBundle = isSelf ? "com.test.app" : "org.example.running"
