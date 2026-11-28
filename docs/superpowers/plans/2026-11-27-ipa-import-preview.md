@@ -30,22 +30,22 @@
 
 文件：`SigningViewModel.swift`、新建 `IPAImportPreview.swift`、`SigningViewModelTests.swift`、新建 `IPAImportPreviewTests.swift`。
 
-- [ ] 在现有导入 API 上写取消回归：先选 first.ipa；预先取消 Task 后尝试 second.ipa；断言 ipaName 仍为 first.ipa，个人标识仍为原值。
-- [ ] 提交 tests-only 并执行现有 build workflow；确认 XCTest 断言失败，而非编译失败。
-- [ ] 写真实 ZIP fixtures 覆盖 metadata、版本缺省、extensions、unsupported 二进制、无效结构、plist 上限；覆盖导入替换、取消时临时文件清理和旧预览保留。
-- [ ] 实现 `IPAImportPreviewInspector.inspect(_:) throws -> IPAImportPreview`，最多扫描 50,000 entries、单个 plist ≤ 1MiB，累计读取 plist ≤ 16MiB；读取不解压任意路径。
-- [ ] preview 存储 bundleID、name、version、build、minimumOSVersion、fileSize、extensions、automaticSigningIssue。
-- [ ] 注入 `inspectPreview`；`importFile` 改为返回成功 Bool，使用 cancellation handler 传播到 worker，提交前检查取消；取消入口使导入失效并等待 worker 清理。
-- [ ] 恢复签名标识时复用已通过预检的 bundleID，签名时保留再次严格验证。
+- [x] 在现有导入 API 上写取消回归：先选 first.ipa；预先取消 Task 后尝试 second.ipa；断言 ipaName 仍为 first.ipa，个人标识仍为原值。
+- [x] 提交 tests-only 并执行现有 build workflow；确认 XCTest 断言失败，而非编译失败。
+- [x] 写真实 ZIP fixtures 覆盖 metadata、版本缺省、extensions、unsupported 二进制、无效结构、plist 上限；覆盖导入替换、取消时临时文件清理和旧预览保留。
+- [x] 实现 `IPAImportPreviewInspector.inspect(_:) throws -> IPAImportPreview`，最多扫描 50,000 entries、单个 plist ≤ 1MiB，累计读取 plist ≤ 16MiB；读取不解压任意路径。
+- [x] preview 存储 bundleID、name、version、build、minimumOSVersion、fileSize、extensions、automaticSigningIssue。
+- [x] 注入 `inspectPreview`；`importFile` 改为返回成功 Bool，使用 cancellation handler 传播到 worker，提交前检查取消；取消入口使导入失效并等待 worker 清理。
+- [x] 恢复签名标识时复用已通过预检的 bundleID，签名时保留再次严格验证。
 
 ## 任务 2：界面、验证与交付
 
 文件：`SigningView.swift`、新建 `IPAImportPreviewView.swift`、`project.yml`、验收文档。
 
-- [ ] 卡片下加入预览和兼容提示；导入时提供取消，未成功导入时不恢复账号签名设置。
-- [ ] 将版本递增至 0.5.5 / 37。
-- [ ] 执行 `python -m unittest discover -s Tests/BuildTools -v` 与 `git diff --check`。
-- [ ] 复用审查代理检查分支 diff，解决实际问题。
-- [ ] 提交推送、运行完整云端 workflow，要求所有 XCTest/native/打包检查及设备构建通过。
-- [ ] 创建 draft PR（base `feat/connection-self-check`）；下载 IPA 并核验外层 artifact 与内层 IPA 摘要、版本、架构、资源。
-- [ ] 输出中文使用说明、验证证据和可点击交付路径，注明真机验收尚未执行。
+- [x] 卡片下加入预览和兼容提示；导入时提供取消，未成功导入时不恢复账号签名设置。
+- [x] 将版本递增至 0.5.5 / 37。
+- [x] 执行 `python -m unittest discover -s Tests/BuildTools -v` 与 `git diff --check`。
+- [x] 复用审查代理检查分支 diff，解决实际问题。
+- [x] 提交推送、运行完整云端 workflow，要求所有 XCTest/native/打包检查及设备构建通过。
+- [x] 创建 draft PR（base `feat/connection-self-check`）；下载 IPA 并核验外层 artifact 与内层 IPA 摘要、版本、架构、资源。
+- [x] 输出中文使用说明、验证证据和可点击交付路径，注明真机验收尚未执行。

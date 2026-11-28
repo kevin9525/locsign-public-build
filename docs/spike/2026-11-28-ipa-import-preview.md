@@ -16,7 +16,17 @@
 - 取消回归 RED：`d255108`，[CI #89](https://github.com/kevin9525/locsign-public-build/actions/runs/46003572369)，530 项 XCTest 执行，新增取消测试的 3 个断言失败；其余 529 项通过。实际错误为取消后仍选中 second.ipa，并清空个人签名标识。
 - 预览 RED：`c0f2582`，[CI #90](https://github.com/kevin9525/locsign-public-build/actions/runs/46113565144)，541 项 XCTest 执行，17 个失败记录全部来自新增预览/取消用例。包含 5 个 scaffold 主动抛出的“尚未读取 IPA 预览”错误和未接入检查导致的 gate 等待失败；其余 529 项既有测试通过，模拟器编译通过。
 - 本地打包测试：`python -m unittest discover -s Tests/BuildTools -v`，15 项通过。
-- 完整实现、模拟器与设备构建、最终 IPA 校验结果在完成后记录。
+- 最终源码 `26474356ab2d25c70a409fc6d3690678771ea31e`：[CI #93](https://github.com/kevin9525/locsign-public-build/actions/runs/46118790209) 全部成功。547 项 XCTest、16 项原生测试、15 项 Python 打包测试、模拟器/设备构建、打包及图标检查通过；其中新增 14 项预览测试、2 项导入取消/旧产物保护测试及 2 项伪报展开大小回归。
+- 构建保留既有第三方宏重定义和 AppIntents 元数据警告；新增测试有一条未使用 Bool 返回值警告，不影响编译或执行结果。没有以消除警告为由更改已验证的产品代码。
+
+## 交付核验
+
+- 文件：`LocSign-0.5.5-build37-unsigned.ipa`，25,865,724 字节。
+- IPA SHA-256：`5e9fdb89f448aeb6a15ff47a7df5dd00f2c3177f8c4e0fad9546e751bd6e8b5d`。
+- GitHub artifact：`15253905761`，外层 SHA-256：`1705ae7e755e221a45ca5fd7a3e2c220c9ed38491506783d0c8e3ac24d4ad8ec`，与 GitHub 公布摘要一致。
+- 本地检查：0.5.5 / 37、`com.locsign.LocSign`、arm64、未签名、图标、三根 Apple 根证书、第三方许可、文件共享、URL scheme、后台 processing、LocationDDI 三份资源摘要及内外 ZIP CRC 均通过。
+- [草稿 PR #4](https://github.com/kevin9525/locsign-public-build/pull/4)，base 为 `feat/connection-self-check`；保持独立开发分支，未合并主分支。
+- 首次下载因临时地址过期返回 403；刷新地址、分段落盘后完整下载并通过摘要核验。产物未修改。
 
 ## 审查与边界修复
 
