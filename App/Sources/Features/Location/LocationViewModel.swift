@@ -155,6 +155,13 @@ final class LocationViewModel: ObservableObject {
         setPlaceName(try LocationPlacesStore.normalizedName(name))
         placesMessage = nil
     }
+    func previewPlacesImport(_ data: Data) throws -> LocationPlacesImportPreview {
+        throw LocationPlacesBackupError.invalidData
+    }
+    @discardableResult
+    func importPlaces(_ preview: LocationPlacesImportPreview) throws -> Int {
+        throw LocationPlacesBackupError.invalidData
+    }
     func renameFavorite(_ place: SavedLocationPlace, to name: String) {
         guard !isBusy else { return }
         updatePlaces { try places.renameFavorite(id: place.id, name: name) }

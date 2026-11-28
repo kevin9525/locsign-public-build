@@ -129,6 +129,19 @@ final class LocationPlacesStore: ObservableObject {
 
     func clearRecents() throws { try commit(favorites: favorites, recents: []) }
 
+    func matchingFavorites(query: String, sort: LocationPlacesSort) -> [SavedLocationPlace] { favorites }
+
+    func exportFavorites() throws -> Data { throw LocationPlacesBackupError.invalidData }
+
+    func previewImport(_ data: Data) throws -> LocationPlacesImportPreview {
+        throw LocationPlacesBackupError.invalidData
+    }
+
+    @discardableResult
+    func importFavorites(_ preview: LocationPlacesImportPreview) throws -> Int {
+        throw LocationPlacesBackupError.invalidData
+    }
+
     private func commit(favorites: [SavedLocationPlace], recents: [SavedLocationPlace]) throws {
         guard loadError == nil else { throw LocationPlacesError.unavailable }
         let stored = Stored(favorites: favorites, recents: recents)

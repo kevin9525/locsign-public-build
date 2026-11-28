@@ -5,6 +5,47 @@ import CoreLocation
 
 @MainActor
 final class LocationViewModelTests: XCTestCase {
+    func testImportFavoriteKeepsSelectionAndDoesNotSendDeviceRequest() throws {
+        let fixture = try setup()
+        enterValidCoordinate(fixture.model)
+        let beforeLatitude = fixture.model.latitude
+        let beforeLongitude = fixture.model.longitude
+        let data = Data(#"{"format":"LocSign.favorites","version":1,"favorites":[{"name":"导入地点","latitude":31.839047,"longitude":118.815859,"coordinateSystem":"gcj02","mapRegion":"mainlandChina"}]}"#.utf8)
+        let preview = try fixture.model.previewPlacesImport(data)
+        XCTAssertEqual(try fixture.model.importPlaces(preview), 1)
+        XCTAssertEqual(fixture.model.latitude, beforeLatitude)
+        XCTAssertEqual(fixture.model.longitude, beforeLongitude)
+        XCTAssertTrue(fixture.controller.setRequests.isEmpty)
+        let place = try XCTUnwrap(fixture.model.places.favorites.first)
+        fixture.model.selectPlace(place)
+        XCTAssertEqual(fixture.model.inputSystem, .gcj02)
+        XCTAssertEqual(fixture.model.latitude, "31.839047")
+        XCTAssertTrue(fixture.controller.setRequests.isEmpty)
+    }
+
+    func testImportCannotMutateFavoritesDuringLocationOrSharedDeviceOperation() async throws {
+        for sharedLock in [false, true] {
+            let fixture = try setup(delayedSet: true)
+            enterValidCoordinate(fixture.model)
+            let data = Data(#"{"format":"LocSign.favorites","version":1,"favorites":[{"name":"新地点","latitude":31,"longitude":118,"coordinateSystem":"wgs84","mapRegion":"otherRegions"}]}"#.utf8)
+            let preview = try fixture.model.previewPlacesImport(data)
+            var lock: UUID?
+            if sharedLock { lock = fixture.settings.beginOperation() }
+            else {
+                fixture.model.apply()
+                await fulfillment(of: [fixture.controller.setStarted], timeout: 5)
+            }
+            defer {
+                fixture.model.cancel()
+                fixture.controller.releaseSet()
+                if let lock { fixture.settings.endOperation(lock) }
+            }
+            XCTAssertThrowsError(try fixture.model.previewPlacesImport(data)) { XCTAssertEqual($0 as? LocationPlacesError, .busy) }
+            XCTAssertThrowsError(try fixture.model.importPlaces(preview)) { XCTAssertEqual($0 as? LocationPlacesError, .busy) }
+            XCTAssertTrue(fixture.model.places.favorites.isEmpty)
+        }
+    }
+
     func testSelectingAnotherSearchResultDoesNotBorrowPreviousAcceptance() async throws {
         let fixture = try setup()
         fixture.model.selectSearchCoordinate(.init(latitude: 31, longitude: 118), countryCode: "US", name: "地点 A")
