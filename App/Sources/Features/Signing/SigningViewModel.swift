@@ -7,6 +7,8 @@ enum SigningInput: Equatable { case ipa, identity, profile, pairing }
 @MainActor
 final class SigningViewModel: ObservableObject {
     @Published private(set) var ipaName = "未选择"
+    @Published private(set) var ipaPreview: IPAImportPreview?
+    @Published private(set) var ipaPreviewError: String?
     @Published private(set) var identityName = "未选择"
     @Published private(set) var profile: ProvisioningProfileData?
     @Published private(set) var needsPassword = false
@@ -61,6 +63,7 @@ final class SigningViewModel: ObservableObject {
     private var subscriptions = Set<AnyCancellable>()
     private var syncingSettings = false
     private let inspectBundleID: @Sendable (URL) throws -> String
+    private let inspectPreview: @Sendable (URL) throws -> IPAImportPreview
     private var identifierTeam: String?
     private let installer: any IPAInstalling
     private let deviceProbe: any PairedDeviceProbing
@@ -75,12 +78,14 @@ final class SigningViewModel: ObservableObject {
          installer: any IPAInstalling = InstallCoordinator(), deviceProbe: any PairedDeviceProbing = ProvisioningDeviceProbe(),
          runningBundleID: String? = Bundle.main.bundleIdentifier,
          inspectBundleID: @escaping @Sendable (URL) throws -> String = { try ProvisioningIPAPreflight().inspect($0).bundleID },
+         inspectPreview: @escaping @Sendable (URL) throws -> IPAImportPreview = { try IPAImportPreviewInspector().inspect($0) },
          materialSigner: (@MainActor (URL, ProvisioningMaterial) async throws -> URL)? = nil) {
         self.library = library
         self.runningBundleID = runningBundleID
         self.selfRenewalProfile = selfRenewalProfile
         self.settings = settings
         self.inspectBundleID = inspectBundleID
+        self.inspectPreview = inspectPreview
         self.installer = installer
         self.deviceProbe = deviceProbe
         self.materialSigner = materialSigner ?? Self.signProvisionedMaterial
