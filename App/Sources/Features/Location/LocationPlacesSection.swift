@@ -5,6 +5,7 @@ import SwiftUI
 struct LocationPlacesSection: View {
     @ObservedObject var model: LocationViewModel
     @ObservedObject var places: LocationPlacesStore
+    @ObservedObject var settings: InstallationSettings
     var onSelect: (SavedLocationPlace) -> Void
     @State private var favoriteName = ""
     @State private var addingFavorite = false
@@ -22,6 +23,9 @@ struct LocationPlacesSection: View {
             HStack {
                 Text("常用地点").font(.subheadline.weight(.semibold))
                 Spacer()
+                NavigationLink {
+                    LocationPlacesManagementView(model: model, settings: settings, places: places, onSelect: onSelect)
+                } label: { Text("管理").font(.subheadline) }
                 Button {
                     favoriteName = model.selectedPlaceName ?? ""
                     saveError = nil
@@ -60,7 +64,7 @@ struct LocationPlacesSection: View {
                 Text(message).font(.footnote).foregroundStyle(.orange).textSelection(.enabled)
             }
         }
-        .disabled(model.isBusy)
+        .disabled(model.isBusy || settings.operationID != nil)
         .alert("收藏当前坐标", isPresented: $addingFavorite) {
             TextField("名称", text: $favoriteName)
             Button("取消", role: .cancel) {}

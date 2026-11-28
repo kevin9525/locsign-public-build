@@ -156,11 +156,15 @@ final class LocationViewModel: ObservableObject {
         placesMessage = nil
     }
     func previewPlacesImport(_ data: Data) throws -> LocationPlacesImportPreview {
-        throw LocationPlacesBackupError.invalidData
+        guard !isBusy, settings.operationID == nil else { throw LocationPlacesError.busy }
+        return try places.previewImport(data)
     }
     @discardableResult
     func importPlaces(_ preview: LocationPlacesImportPreview) throws -> Int {
-        throw LocationPlacesBackupError.invalidData
+        guard !isBusy, settings.operationID == nil else { throw LocationPlacesError.busy }
+        let count = try places.importFavorites(preview)
+        placesMessage = nil
+        return count
     }
     func renameFavorite(_ place: SavedLocationPlace, to name: String) {
         guard !isBusy else { return }

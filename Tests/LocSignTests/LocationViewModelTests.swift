@@ -43,6 +43,14 @@ final class LocationViewModelTests: XCTestCase {
             XCTAssertThrowsError(try fixture.model.previewPlacesImport(data)) { XCTAssertEqual($0 as? LocationPlacesError, .busy) }
             XCTAssertThrowsError(try fixture.model.importPlaces(preview)) { XCTAssertEqual($0 as? LocationPlacesError, .busy) }
             XCTAssertTrue(fixture.model.places.favorites.isEmpty)
+            if !sharedLock {
+                let finished = expectation(description: "Import busy fixture drained")
+                let observation = idleObservation(fixture.model, finished: finished)
+                fixture.model.cancel()
+                fixture.controller.releaseSet()
+                await fulfillment(of: [finished], timeout: 5)
+                observation.cancel()
+            }
         }
     }
 

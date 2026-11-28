@@ -129,17 +129,59 @@ final class LocationPlacesStore: ObservableObject {
 
     func clearRecents() throws { try commit(favorites: favorites, recents: []) }
 
-    func matchingFavorites(query: String, sort: LocationPlacesSort) -> [SavedLocationPlace] { favorites }
+    func matchingFavorites(query: String, sort: LocationPlacesSort) -> [SavedLocationPlace] {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matches = favorites.filter { query.isEmpty || $0.name.localizedStandardContains(query) }
+        guard sort == .name else { return matches }
+        return matches.enumerated().sorted { lhs, rhs in
+            let order = lhs.element.name.localizedStandardCompare(rhs.element.name)
+            return order == .orderedSame ? lhs.offset < rhs.offset : order == .orderedAscending
+        }.map(\.element)
+    }
 
-    func exportFavorites() throws -> Data { throw LocationPlacesBackupError.invalidData }
+    func exportFavorites() throws -> Data {
+        guard loadError == nil else { throw LocationPlacesError.unavailable }
+        return try LocationPlacesBackup.encode(favorites)
+    }
+
+    private struct PlaceKey: Hashable {
+        let latitude: Double
+        let longitude: Double
+        let system: String
+        init(_ place: SavedLocationPlace) {
+            latitude = place.latitude
+            longitude = place.longitude
+            system = place.coordinateSystem.rawValue
+        }
+    }
 
     func previewImport(_ data: Data) throws -> LocationPlacesImportPreview {
-        throw LocationPlacesBackupError.invalidData
+        guard loadError == nil else { throw LocationPlacesError.unavailable }
+        let incoming = try LocationPlacesBackup.decode(data)
+        var keys = Set(favorites.map(PlaceKey.init))
+        var additions: [SavedLocationPlace] = []
+        var duplicates = 0
+        for place in incoming {
+            if keys.insert(PlaceKey(place)).inserted { additions.append(place) }
+            else { duplicates += 1 }
+        }
+        guard favorites.count + additions.count <= LocationPlacesBackup.maximumPlaces else {
+            throw LocationPlacesBackupError.tooLarge
+        }
+        return LocationPlacesImportPreview(existing: favorites, additions: additions, duplicateCount: duplicates)
     }
 
     @discardableResult
     func importFavorites(_ preview: LocationPlacesImportPreview) throws -> Int {
-        throw LocationPlacesBackupError.invalidData
+        guard loadError == nil else { throw LocationPlacesError.unavailable }
+        guard favorites == preview.existing else { throw LocationPlacesBackupError.stalePreview }
+        guard favorites.count + preview.additions.count <= LocationPlacesBackup.maximumPlaces else {
+            throw LocationPlacesBackupError.tooLarge
+        }
+        guard !preview.additions.isEmpty else { return 0 }
+        // Retain current recents, which may change while the confirmation is open.
+        try commit(favorites: favorites + preview.additions, recents: recents)
+        return preview.additions.count
     }
 
     private func commit(favorites: [SavedLocationPlace], recents: [SavedLocationPlace]) throws {

@@ -13,6 +13,8 @@ final class LocationPlacesBackupTests: XCTestCase {
         XCTAssertEqual(json["format"] as? String, "LocSign.favorites")
         XCTAssertEqual(json["version"] as? Int, 1)
         XCTAssertNil(json["recents"])
+        let exported = try XCTUnwrap(json["favorites"] as? [[String: Any]])
+        XCTAssertTrue(exported.allSatisfy { $0["id"] == nil })
         let restored = try store()
         let preview = try restored.previewImport(data)
         XCTAssertEqual(preview.additions.count, 2)
@@ -24,6 +26,8 @@ final class LocationPlacesBackupTests: XCTestCase {
         XCTAssertEqual(restored.favorites.map(\.coordinateSystem), [.gcj02, .wgs84])
         XCTAssertEqual(restored.favorites.map(\.mapRegion), [.mainlandChina, .otherRegions])
         XCTAssertTrue(restored.recents.isEmpty)
+        XCTAssertTrue(Set(restored.favorites.map(\.id)).isDisjoint(with: Set(source.favorites.map(\.id))))
+        XCTAssertEqual(Set(restored.favorites.map(\.id)).count, 2)
     }
 
     func testImportPreviewDoesNotWriteAndMergeRetainsLocalNameAndRegion() throws {
@@ -96,6 +100,22 @@ final class LocationPlacesBackupTests: XCTestCase {
         XCTAssertEqual(preview.totalCount, 0)
         XCTAssertEqual(try target.importFavorites(preview), 0)
         XCTAssertEqual(target.favorites, before)
+    }
+
+    func testMergeLimitRejectsWholeImportWithoutChangingExistingFavorites() throws {
+        let defaults = try defaults()
+        let rows = (0..<4999).map { index -> [String: Any] in
+            var row = item("地点\(index)", 0, Double(index) / 1000)
+            row["id"] = UUID().uuidString
+            return row
+        }
+        let saved = try JSONSerialization.data(withJSONObject: ["favorites": rows, "recents": []])
+        defaults.set(saved, forKey: LocationPlacesStore.key)
+        let target = LocationPlacesStore(defaults: defaults)
+        XCTAssertEqual(target.favorites.count, 4999)
+        let data = try backup([item("新增甲", 10, 100), item("新增乙", 11, 101)])
+        XCTAssertThrowsError(try target.previewImport(data)) { XCTAssertEqual($0 as? LocationPlacesBackupError, .tooLarge) }
+        XCTAssertEqual(defaults.data(forKey: LocationPlacesStore.key), saved)
     }
 
     func testChangedFavoritesRequireNewPreviewAndKeepNewLocalEdits() throws {
