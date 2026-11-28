@@ -109,6 +109,9 @@ final class SigningViewModelTests: XCTestCase {
         try IPAPacker.makeZip(fromDirectory: temporary.appendingPathComponent("Payload"), to: ipa)
 
         await model.importFile(ipa, as: .ipa)
+        XCTAssertEqual(model.ipaPreview?.bundleID, "com.test.app")
+        XCTAssertNotNil(model.ipaPreview?.automaticSigningIssue,
+                        "A preview warning must not block this existing manual-signing fixture")
         await model.importFile(keyURL, as: .identity)
         await model.importFile(profileURL, as: .profile)
         if let personalTarget { model.usesPersonalBundleID = true; model.personalBundleID = personalTarget }

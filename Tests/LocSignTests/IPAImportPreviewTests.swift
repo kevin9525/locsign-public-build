@@ -59,12 +59,23 @@ final class IPAImportPreviewTests: XCTestCase {
     func testRejectsAmbiguousMainAppsAndUnsafeArchivePaths() throws {
         for extra in ["Payload/Other.app/File", "Payload/Demo.app/info.plist", "../escape",
                       "Payload//Demo.app/Foo", "Payload/Demo.app/../Foo"] {
-            XCTAssertThrowsError(try IPAImportPreviewInspector().inspect(fixture(extra: [extra: Data()])))
+            let ipa = try fixture(extra: [extra: Data()])
+            XCTAssertThrowsError(try IPAImportPreviewInspector().inspect(ipa))
         }
     }
 
     func testRejectsOversizedMainPlistBeforeReadingIt() throws {
         let ipa = try fixture(info: ["CFBundleName": String(repeating: "x", count: 1_048_577)])
+        XCTAssertThrowsError(try IPAImportPreviewInspector().inspect(ipa))
+    }
+
+    func testRejectsSymbolicLinksWithoutFollowingThem() throws {
+        let ipa = try fixture()
+        let archive = try Archive(url: ipa, accessMode: .update)
+        let target = Data("../../outside".utf8)
+        try archive.addEntry(with: "Payload/Demo.app/Link", type: .symlink, uncompressedSize: Int64(target.count)) { position, size in
+            Data(target[Int(position)..<min(Int(position) + size, target.count)])
+        }
         XCTAssertThrowsError(try IPAImportPreviewInspector().inspect(ipa))
     }
 
@@ -110,6 +121,16 @@ final class IPAImportPreviewTests: XCTestCase {
 
     @MainActor
     func testCancellationDuringInspectionDrainsWorkerAndPreservesOldSelection() async throws {
+        try await assertCancelledInspection(usingButton: false)
+    }
+
+    @MainActor
+    func testCancelImportButtonRejectsLatePreviewAndCleansTemporaryCopy() async throws {
+        try await assertCancelledInspection(usingButton: true)
+    }
+
+    @MainActor
+    private func assertCancelledInspection(usingButton: Bool) async throws {
         let first = try fixture()
         let second = first.deletingLastPathComponent().appendingPathComponent("second.ipa")
         try Data("replacement".utf8).write(to: second)
@@ -125,11 +146,11 @@ final class IPAImportPreviewTests: XCTestCase {
             return try IPAImportPreviewInspector().inspect(url)
         })
         await model.importFile(first, as: .ipa)
-        let previous = model.ipaPreview
+        let previous = try XCTUnwrap(model.ipaPreview)
         let work = Task { await model.importFile(second, as: .ipa) }
         defer { gate.release.signal() }
         await fulfillment(of: [gate.entered], timeout: 3)
-        work.cancel()
+        if usingButton { model.cancelImport() } else { work.cancel() }
         XCTAssertTrue(model.isImporting)
         XCTAssertEqual(model.ipaName, first.lastPathComponent)
         gate.release.signal()
@@ -139,6 +160,26 @@ final class IPAImportPreviewTests: XCTestCase {
         XCTAssertEqual(model.ipaName, first.lastPathComponent)
         let staged = try XCTUnwrap(gate.url)
         XCTAssertFalse(FileManager.default.fileExists(atPath: staged.path))
+    }
+
+    @MainActor
+    func testVerifiedPreviewRestoresSavedIdentifierWithoutInspectingArchiveAgain() async throws {
+        let ipa = try fixture()
+        let root = ipa.deletingLastPathComponent()
+        let suite = "preview-tests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let settings = InstallationSettings(directory: root.appendingPathComponent("settings"), defaults: defaults)
+        try settings.saveSigningChoice(.init(personal: true, identifier: "com.personal.saved"),
+                                       bundleID: "com.test.preview", teamID: "TEAM")
+        let model = SigningViewModel(settings: settings, inspectBundleID: { _ in
+            throw LocSignError.signing("Unexpected duplicate inspection")
+        })
+        await model.importFile(ipa, as: .ipa)
+        await model.restoreSigningIdentifier(teamID: "TEAM")
+        XCTAssertTrue(model.usesPersonalBundleID)
+        XCTAssertEqual(model.personalBundleID, "com.personal.saved")
+        XCTAssertNil(model.error)
     }
 
     private func fixture(info: [String: Any]? = nil, binary: Data? = nil,

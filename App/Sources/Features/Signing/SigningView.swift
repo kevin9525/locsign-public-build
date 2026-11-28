@@ -47,7 +47,17 @@ struct SigningView: View {
                 readinessSection
                 installSection
                 if model.isImporting || model.isPreparingIdentifier {
-                    Section { HStack { ProgressView(); Text(model.isImporting ? "正在导入 IPA…" : "正在读取应用设置…") } }
+                    Section {
+                        HStack {
+                            ProgressView()
+                            Text(model.isCancellingImport ? "正在取消，等待当前检查结束…"
+                                 : model.isImporting ? "正在导入并读取应用信息…" : "正在读取应用设置…")
+                        }
+                        if model.isImporting {
+                            Button("取消导入", role: .cancel) { model.cancelImport() }
+                                .disabled(model.isCancellingImport)
+                        }
+                    }
                 }
                 if model.isSigning && operation == nil {
                     Section { HStack { ProgressView(); Text("正在签名 IPA…") } }
@@ -102,8 +112,10 @@ struct SigningView: View {
                 case .success(let url):
                     let kind = input
                     Task {
-                        await model.importFile(url, as: kind)
-                        if kind == .ipa { await model.restoreSigningIdentifier(teamID: account.teamID) }
+                        let imported = await model.importFile(url, as: kind)
+                        if imported, kind == .ipa, let preview = model.ipaPreview, preview.automaticSigningIssue == nil {
+                            await model.restoreSigningIdentifier(teamID: account.teamID)
+                        }
                     }
                 case .failure(let error):
                     if (error as NSError).code != NSUserCancelledError { model.error = error.localizedDescription }
@@ -192,6 +204,17 @@ struct SigningView: View {
                 .padding(.vertical, 4)
             }
             .disabled(busy)
+            if let preview = model.ipaPreview {
+                IPAImportPreviewView(preview: preview)
+            } else if let issue = model.ipaPreviewError {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("无法读取 IPA 预览", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                    Text(issue).font(.footnote).textSelection(.enabled)
+                    Text("文件已选择；可更换 IPA，或使用手动证书签名检查实际支持情况。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Button {
                 if isSelfRenewal { confirmingSelfInstall = true } else { startInstallation() }
             } label: {
