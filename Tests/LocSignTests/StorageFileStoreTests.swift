@@ -86,6 +86,48 @@ final class StorageFileStoreTests: XCTestCase {
         XCTAssertTrue(f.exists(pending))
     }
 
+    func testReplacementBeforeFirstScanNeverBecomesAStartupCandidate() throws {
+        let f = try fixture()
+        let path = try f.file(.signed, bytes: 8)
+        let store = f.store()
+        try Data(repeating: 9, count: 8).write(to: path, options: .atomic)
+        let report = try store.scan(apps: [])
+        XCTAssertEqual(report.signedBytes, 8)
+        XCTAssertEqual(report.cleanup.count, 0)
+        _ = try store.clean(report.cleanup, apps: [])
+        XCTAssertEqual(try Data(contentsOf: path), Data(repeating: 9, count: 8))
+    }
+
+    func testPartialDeletionFailureReportsOnlyFilesActuallyRemoved() throws {
+        let f = try fixture()
+        let blocked = try f.file(.signed, bytes: 7)
+        let removable = try f.file(.imported, bytes: 3)
+        let store = f.store()
+        let preview = try store.scan(apps: []).cleanup
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: f.signed.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: f.signed.path) }
+        let result = try store.clean(preview, apps: [])
+        XCTAssertEqual(result.removedBytes, 3)
+        XCTAssertEqual(result.removedCount, 1)
+        XCTAssertEqual(result.failedCount, 1)
+        XCTAssertTrue(f.exists(blocked))
+        XCTAssertFalse(f.exists(removable))
+    }
+
+    func testDirectoryAlreadyLinkedAtStartupIsNeverScannedForCleanup() throws {
+        let f = try fixture()
+        let path = try f.file(.signed, bytes: 7)
+        let moved = f.root.appendingPathComponent("outside")
+        try FileManager.default.moveItem(at: f.signed, to: moved)
+        try FileManager.default.createSymbolicLink(at: f.signed, withDestinationURL: moved)
+        let store = f.store()
+        let report = try store.scan(apps: [])
+        XCTAssertEqual(report.cleanup.count, 0)
+        XCTAssertFalse(report.warnings.isEmpty)
+        _ = try store.clean(report.cleanup, apps: [])
+        XCTAssertTrue(f.exists(moved.appendingPathComponent(path.lastPathComponent)))
+    }
+
     func testReplacementAtSamePathIsNotDeletedFromOldPreview() throws {
         let f = try fixture()
         let path = try f.file(.signed, bytes: 8)

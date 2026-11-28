@@ -83,6 +83,76 @@ final class StorageManagementModelTests: XCTestCase {
         XCTAssertTrue(f.exists(source))
     }
 
+    func testSecondSigningInstanceHoldsSharedLockUntilCancelledImportDrains() async throws {
+        let (f, library, settings) = try fixture()
+        let cache = try f.file(.signed, bytes: 6)
+        let source = f.root.appendingPathComponent("input.ipa")
+        try Data([1]).write(to: source)
+        let store = f.store()
+        let primary = SigningViewModel(settings: settings)
+        let model = StorageManagementModel(store: store, library: library, settings: settings, blocked: { primary.busy })
+        let preview = try store.scan(apps: []).cleanup
+        let gate = StorageInspectionGate()
+        let secondary = SigningViewModel(settings: settings, inspectPreview: { _ in
+            gate.entered.fulfill()
+            _ = gate.release.wait(timeout: .now() + 10)
+            return IPAImportPreview(name: "Demo", bundleID: "org.example.demo", version: nil, build: nil,
+                minimumOSVersion: nil, fileSize: 1, extensions: [], automaticSigningIssue: nil)
+        })
+        let work = Task { await secondary.importFile(source, as: .ipa) }
+        defer { gate.release.signal() }
+        await fulfillment(of: [gate.entered], timeout: 3)
+        XCTAssertNotNil(settings.operationID)
+        let overlap = await primary.importFile(source, as: .ipa)
+        XCTAssertFalse(overlap)
+        do { _ = try await model.clean(preview); XCTFail("Second signing instance was ignored") } catch {}
+        secondary.cancelImport()
+        XCTAssertNotNil(settings.operationID, "Cancellation must drain the worker before releasing the lock")
+        gate.release.signal()
+        let imported = await work.value
+        XCTAssertFalse(imported)
+        XCTAssertTrue(f.exists(cache))
+        XCTAssertNil(settings.operationID)
+    }
+
+    func testUncachedIdentifierInspectionAlsoLocksAcrossSigningInstances() async throws {
+        let (f, _, settings) = try fixture()
+        let source = f.root.appendingPathComponent("input.ipa")
+        try Data([1]).write(to: source)
+        let gate = StorageInspectionGate()
+        let secondary = SigningViewModel(settings: settings, inspectBundleID: { _ in
+            gate.entered.fulfill()
+            _ = gate.release.wait(timeout: .now() + 10)
+            throw LocSignError.signing("inspection failed")
+        }, inspectPreview: { _ in throw LocSignError.signing("preview unavailable") })
+        _ = await secondary.importFile(source, as: .ipa)
+        let work = Task { await secondary.restoreSigningIdentifier(teamID: "TEAM") }
+        defer { gate.release.signal() }
+        await fulfillment(of: [gate.entered], timeout: 3)
+        XCTAssertNotNil(settings.operationID)
+        XCTAssertTrue(SigningViewModel(settings: settings).busy)
+        gate.release.signal()
+        await work.value
+        XCTAssertNil(settings.operationID)
+        XCTAssertNotNil(secondary.error)
+    }
+
+    func testDeletedManifestAfterPreviewBlocksCleanupOfPreviouslyKnownSources() async throws {
+        let (f, library, settings) = try fixture()
+        let cache = try f.file(.signed, bytes: 6)
+        let source = try f.file(.library, bytes: 9)
+        try Data("{\"version\":1,\"apps\":[]}".utf8).write(to: f.library.appendingPathComponent("apps.json"))
+        library.reload()
+        let store = f.store()
+        let model = StorageManagementModel(store: store, library: library, settings: settings)
+        let preview = try store.scan(apps: []).cleanup
+        try FileManager.default.removeItem(at: f.library.appendingPathComponent("apps.json"))
+        do { _ = try await model.clean(preview); XCTFail("Missing manifest ignored") } catch {}
+        XCTAssertTrue(f.exists(cache))
+        XCTAssertTrue(f.exists(source))
+        XCTAssertNil(settings.operationID)
+    }
+
     private func fixture() throws -> (StorageFixture, ManagedAppLibrary, InstallationSettings) {
         let f = try StorageFixture()
         let suite = UUID().uuidString
@@ -94,4 +164,9 @@ final class StorageManagementModelTests: XCTestCase {
         return (f, ManagedAppLibrary(directory: f.library),
                 InstallationSettings(directory: f.root.appendingPathComponent("Installation"), defaults: defaults))
     }
+}
+
+private final class StorageInspectionGate: @unchecked Sendable {
+    let entered = XCTestExpectation(description: "inspection entered")
+    let release = DispatchSemaphore(value: 0)
 }
