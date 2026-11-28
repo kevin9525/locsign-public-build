@@ -38,19 +38,22 @@ struct ProvisioningIPAPreflight: Sendable {
         var total: UInt64 = 0
         for entry in archive {
             try Task.checkCancellation()
-            let components = entry.path.split(separator: "/", omittingEmptySubsequences: false)
-            guard !entry.path.hasPrefix("/"), !entry.path.contains("\\"), !entry.path.contains("\0"),
+            let path = entry.path.hasSuffix("/") ? String(entry.path.dropLast()) : entry.path
+            let components = path.split(separator: "/", omittingEmptySubsequences: false)
+            guard !components.contains(""), !entry.path.contains("\\"), !entry.path.contains("\0"),
                   !components.contains(".."), !components.contains("."), entry.type != .symlink,
-                  paths.insert(entry.path.lowercased()).inserted,
+                  !entry.path.hasSuffix("/") || entry.type == .directory,
+                  paths.insert(path.lowercased()).inserted,
                   paths.count <= 50_000, entry.uncompressedSize <= 2_147_483_648,
                   total <= 2_147_483_648 - entry.uncompressedSize else { throw unsupported("归档结构或大小不受支持") }
             total += entry.uncompressedSize
         }
-        let app = try IPAPacker.unpack(ipaURL, into: work.appendingPathComponent("unpacked"))
-        let payload = app.deletingLastPathComponent()
+        let unpacked = work.appendingPathComponent("unpacked", isDirectory: true)
+        try unpack(archive, into: unpacked)
+        let payload = unpacked.appendingPathComponent("Payload", isDirectory: true)
         let mainApps = try fm.contentsOfDirectory(at: payload, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension.lowercased() == "app" }
-        guard mainApps.count == 1,
+        guard mainApps.count == 1, let app = mainApps.first,
               let enumerator = fm.enumerator(at: app, includingPropertiesForKeys: [.isSymbolicLinkKey]) else {
             throw unsupported("只支持一个主 App")
         }
@@ -102,6 +105,51 @@ struct ProvisioningIPAPreflight: Sendable {
         return ProvisioningApp(bundleID: bundle,
             name: (info["CFBundleDisplayName"] as? String) ?? (info["CFBundleName"] as? String) ?? app.deletingPathExtension().lastPathComponent,
             extensions: extensions.sorted { $0.bundleID < $1.bundleID })
+    }
+
+    /// Enforce limits against actual inflated bytes, not just ZIP headers.
+    /// This workspace is read only by preflight, so executable modes are not
+    /// needed. The caller removes the entire workspace on every exit path.
+    private func unpack(_ archive: Archive, into directory: URL) throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        let root = directory.standardizedFileURL.path + "/"
+        var total: UInt64 = 0
+        for entry in archive {
+            try Task.checkCancellation()
+            let destination = directory.appendingPathComponent(entry.path).standardizedFileURL
+            guard destination.path.hasPrefix(root), entry.type != .symlink else {
+                throw unsupported("归档路径不受支持")
+            }
+            if entry.type == .directory {
+                guard entry.uncompressedSize == 0 else { throw unsupported("归档目录大小无效") }
+                try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+                continue
+            }
+            try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            guard !fm.fileExists(atPath: destination.path),
+                  fm.createFile(atPath: destination.path, contents: nil) else {
+                throw unsupported("归档文件路径冲突")
+            }
+            let handle = try FileHandle(forWritingTo: destination)
+            defer { try? handle.close() }
+            var actual: UInt64 = 0
+            let checksum = try archive.extract(entry, bufferSize: 65_536) { chunk in
+                try Task.checkCancellation()
+                let count = UInt64(chunk.count)
+                guard actual <= entry.uncompressedSize, count <= entry.uncompressedSize - actual,
+                      count <= 2_147_483_648 - total else {
+                    throw unsupported("归档实际展开大小超过声明或限制")
+                }
+                actual += count
+                total += count
+                try handle.write(contentsOf: chunk)
+            }
+            guard actual == entry.uncompressedSize, checksum == entry.checksum else {
+                throw unsupported("归档文件大小或校验和不匹配")
+            }
+        }
+        try Task.checkCancellation()
     }
 
     /// An extension is checked exactly like the main executable: same Mach-O

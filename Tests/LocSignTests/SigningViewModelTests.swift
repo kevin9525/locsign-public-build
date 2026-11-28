@@ -4,6 +4,29 @@ import ZIPFoundation
 
 final class SigningViewModelTests: XCTestCase {
     @MainActor
+    func testFailedAndCancelledReplacementKeepExistingSignedOutput() async throws {
+        let model = try await signedModel()
+        defer { model.discardOutput() }
+        let output = try XCTUnwrap(model.outputURL)
+        let bytes = try Data(contentsOf: output)
+        let preview = try XCTUnwrap(model.ipaPreview)
+        let selected = model.ipaName
+        let missing = output.deletingLastPathComponent().appendingPathComponent("missing-\(UUID().uuidString).ipa")
+        await model.importFile(missing, as: .ipa)
+        XCTAssertEqual(model.outputURL, output)
+        XCTAssertEqual(try Data(contentsOf: output), bytes)
+        let work = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            await model.importFile(output, as: .ipa)
+        }
+        await work.value
+        XCTAssertEqual(model.outputURL, output)
+        XCTAssertEqual(try Data(contentsOf: output), bytes)
+        XCTAssertEqual(model.ipaPreview, preview)
+        XCTAssertEqual(model.ipaName, selected)
+    }
+
+    @MainActor
     func testCancelledIPAImportPreservesPreviousSelectionAndSigningChoice() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
