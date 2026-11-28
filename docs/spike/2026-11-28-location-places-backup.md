@@ -23,7 +23,20 @@
 
 基线 `153e243`（已验证的 0.5.5 / 37）。首轮测试与接口 scaffold 为 `bc8ab06`，[CI #94](https://github.com/kevin9525/locsign-public-build/actions/runs/46123958669) 执行 559 项 XCTest、14 个失败记录均来自新增功能缺失（包括 scaffold 抛出的 invalidData）；既有 547 项通过。模拟器编译通过。
 
-本地 `python -m unittest discover -s Tests/BuildTools -v`：15 项通过；`git diff --check` 通过。完整实现、最终构建和交付校验完成后补入。
+本地 `python -m unittest discover -s Tests/BuildTools -v`：15 项通过；`git diff --check` 通过。
+
+完整实现 `3a977d002dba33d1e285f98ec0c5da417a001b02` 通过 [CI #95](https://github.com/kevin9525/locsign-public-build/actions/runs/46127238647)：560 项 XCTest、16 项原生测试、15 项 Python 打包测试、模拟器及设备构建、IPA 打包和图标检查全部成功。新增 11 项备份/管理测试及 2 项 ViewModel 导入测试通过。与 build 37 的测试构建日志比较无新增警告；已有第三方宏、AppIntents 和测试未使用返回值警告保留。
+
+独立只读审查覆盖 `153e243..3a977d0`，未发现 Critical / Important 问题：确认了全部校验后预览、一次合并、原始坐标和类型去重、过期预览保护、最新历史保留、两阶段设备锁校验、有界读取和取消传播，以及全部收藏导出和记录 ID 隔离。Swift 编译和 XCTest 结论以 [CI #95](https://github.com/kevin9525/locsign-public-build/actions/runs/46127238647) 为准。
+
+## 交付核验
+
+- 文件：`LocSign-0.5.6-build38-unsigned.ipa`，25,950,966 字节。
+- IPA SHA-256：`41e8935e199d79c203397b6335567b27f259f8e2d7ad030e6d128d30d265f425`。
+- GitHub artifact：`15256209191`；外层 SHA-256：`6c23acaecbf58089da44de24a0298d9b0c274b302bd01519a94d9d3f990b73c6`，与 GitHub 公布摘要一致。
+- 本地检查：版本 0.5.6 / 38、`com.locsign.LocSign`、arm64、未签名、图标、三根 Apple 根证书、许可文件、文件共享、URL scheme、后台 processing、LocationDDI 三份资源摘要及内外 ZIP CRC 全部通过。
+- [草稿 PR #5](https://github.com/kevin9525/locsign-public-build/pull/5)，base 为 `feat/ipa-import-preview`，保持独立开发分支，未合并主分支。
+- 本次未把 IPA 传入手机或执行安装；下列真机步骤待验收。
 
 ## 真机验收
 
