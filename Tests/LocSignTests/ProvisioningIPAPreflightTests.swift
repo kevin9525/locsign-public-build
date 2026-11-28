@@ -8,6 +8,45 @@ final class ProvisioningIPAPreflightTests: XCTestCase {
         XCTAssertEqual(try ProvisioningIPAPreflight().inspect(ipa), ProvisioningApp(bundleID: "com.test.app", name: "Test"))
     }
 
+    func testRejectsCompressedResourceThatLiesAboutExpandedSize() throws {
+        let ipa = try archive()
+        try addMisreportedResource(to: ipa)
+        XCTAssertThrowsError(try ProvisioningIPAPreflight().inspect(ipa))
+    }
+
+    func testImportPreviewDoesNotClaimCompatibilityForMisreportedResourceSize() throws {
+        let ipa = try archive()
+        try addMisreportedResource(to: ipa)
+        let preview = try IPAImportPreviewInspector().inspect(ipa)
+        XCTAssertEqual(preview.bundleID, "com.test.app")
+        XCTAssertNotNil(preview.automaticSigningIssue)
+    }
+
+    private func addMisreportedResource(to ipa: URL) throws {
+        let path = "Payload/Test.app/Resource.bin"
+        func addResource() throws {
+            let archive = try Archive(url: ipa, accessMode: .update)
+            let data = Data(repeating: 65, count: 4096)
+            try archive.addEntry(with: path, type: .file, uncompressedSize: Int64(data.count),
+                                 compressionMethod: .deflate) { position, size in
+                Data(data[Int(position)..<min(Int(position) + size, data.count)])
+            }
+        }
+        try addResource()
+        var bytes = try Data(contentsOf: ipa)
+        let name = Data(path.utf8)
+        let signature = Data([0x50, 0x4b, 0x01, 0x02])
+        let header = try XCTUnwrap((0..<(bytes.count - 46 - name.count)).first { offset in
+            bytes.subdata(in: offset..<(offset + 4)) == signature
+                && bytes.subdata(in: (offset + 46)..<(offset + 46 + name.count)) == name
+        })
+        let local = bytes[(header + 42)..<(header + 46)].reversed().reduce(0) { ($0 << 8) | Int($1) }
+        // Keep deflate content and CRC intact; only the two declared lengths lie.
+        bytes.replaceSubrange((header + 24)..<(header + 28), with: [1, 0, 0, 0])
+        bytes.replaceSubrange((local + 22)..<(local + 26), with: [1, 0, 0, 0])
+        try bytes.write(to: ipa)
+    }
+
     func testRejectsMultipleAppsExtensionsNestedAppsAndInvalidExecutable() throws {
         for extra in ["Payload/Other.app/Info.plist", "Payload/Test.app/PlugIns/Ext.appex/Info.plist", "Payload/Test.app/Nested.app/Info.plist"] {
             XCTAssertThrowsError(try ProvisioningIPAPreflight().inspect(archive(extra: extra)))
