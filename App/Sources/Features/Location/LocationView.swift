@@ -38,7 +38,7 @@ struct LocationView: View {
                     searchBar
                     if !model.searchResults.isEmpty { searchResultsList }
                     map
-                    LocationPlacesSection(model: model, places: model.places) { place in
+                    LocationPlacesSection(model: model, places: model.places, settings: settings) { place in
                         model.selectPlace(place)
                         focus(on: model.selected)
                     }
