@@ -7,12 +7,15 @@ enum SigningInput: Equatable { case ipa, identity, profile, pairing }
 @MainActor
 final class SigningViewModel: ObservableObject {
     @Published private(set) var ipaName = "未选择"
+    @Published private(set) var ipaPreview: IPAImportPreview?
+    @Published private(set) var ipaPreviewError: String?
     @Published private(set) var identityName = "未选择"
     @Published private(set) var profile: ProvisioningProfileData?
     @Published private(set) var needsPassword = false
     @Published var password = ""
     @Published private(set) var isSigning = false
     @Published private(set) var isImporting = false
+    @Published private(set) var isCancellingImport = false
     @Published private(set) var outputURL: URL?
     @Published private(set) var pairingName = "未选择"
     @Published private(set) var isInstalling = false
@@ -61,6 +64,7 @@ final class SigningViewModel: ObservableObject {
     private var subscriptions = Set<AnyCancellable>()
     private var syncingSettings = false
     private let inspectBundleID: @Sendable (URL) throws -> String
+    private let inspectPreview: @Sendable (URL) throws -> IPAImportPreview
     private var identifierTeam: String?
     private let installer: any IPAInstalling
     private let deviceProbe: any PairedDeviceProbing
@@ -69,18 +73,25 @@ final class SigningViewModel: ObservableObject {
     private var provisioningEngine: (any ProvisioningEngine)?
     private var outputIsProvisioned = false
     private var identifierTask: Task<String, Error>?
+    private struct ImportedPreview: Sendable {
+        let preview: IPAImportPreview?
+        let error: String?
+    }
+    private var importTask: Task<ImportedPreview, Error>?
 
     init(settings: InstallationSettings? = nil, library: ManagedAppLibrary? = nil,
          selfRenewalProfile: InstalledSelfProfile? = nil,
          installer: any IPAInstalling = InstallCoordinator(), deviceProbe: any PairedDeviceProbing = ProvisioningDeviceProbe(),
          runningBundleID: String? = Bundle.main.bundleIdentifier,
          inspectBundleID: @escaping @Sendable (URL) throws -> String = { try ProvisioningIPAPreflight().inspect($0).bundleID },
+         inspectPreview: @escaping @Sendable (URL) throws -> IPAImportPreview = { try IPAImportPreviewInspector().inspect($0) },
          materialSigner: (@MainActor (URL, ProvisioningMaterial) async throws -> URL)? = nil) {
         self.library = library
         self.runningBundleID = runningBundleID
         self.selfRenewalProfile = selfRenewalProfile
         self.settings = settings
         self.inspectBundleID = inspectBundleID
+        self.inspectPreview = inspectPreview
         self.installer = installer
         self.deviceProbe = deviceProbe
         self.materialSigner = materialSigner ?? Self.signProvisionedMaterial
@@ -310,6 +321,13 @@ final class SigningViewModel: ObservableObject {
 
     func restoreSigningIdentifier(teamID: String) async {
         guard !busy, let ipaURL, !teamID.isEmpty, identifierTeam != teamID else { return }
+        // Only a successful strict preflight populates this cached identity.
+        // Actual signing still performs its own validation in perform().
+        if let inspectedBundleID {
+            applySigningChoice(bundleID: inspectedBundleID, teamID: teamID)
+            identifierTeam = teamID
+            return
+        }
         isPreparingIdentifier = true
         let operation = generation
         defer { isPreparingIdentifier = false; identifierTask = nil }
@@ -416,10 +434,17 @@ final class SigningViewModel: ObservableObject {
         ipaURL != nil && identityData != nil && profile != nil && !busy
     }
 
-    func importFile(_ url: URL, as input: SigningInput) async {
-        guard !busy else { return }
+    func cancelImport() {
+        guard isImporting, let importTask else { return }
+        isCancellingImport = true
+        importTask.cancel()
+    }
+
+    @discardableResult
+    func importFile(_ url: URL, as input: SigningInput) async -> Bool {
+        guard !busy else { return false }
         isImporting = true
-        defer { isImporting = false }
+        defer { isImporting = false; isCancellingImport = false; importTask = nil }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         do {
@@ -429,17 +454,33 @@ final class SigningViewModel: ObservableObject {
                     throw LocSignError.signing("请选择 .ipa 文件")
                 }
                 let copy = FileManager.default.temporaryDirectory.appendingPathComponent("import-\(UUID().uuidString).ipa")
-                try await Task.detached(priority: .userInitiated) {
-                    do {
-                        try FileManager.default.copyItem(at: url, to: copy)
-                    } catch {
-                        try? FileManager.default.removeItem(at: copy)
-                        throw error
+                // The actor commits file and metadata together. Failed or
+                // cancelled imports retain the old selection and signed output.
+                defer { if ipaURL != copy { try? FileManager.default.removeItem(at: copy) } }
+                try Task.checkCancellation()
+                let inspect = inspectPreview
+                let task = Task.detached(priority: .userInitiated) {
+                    try Task.checkCancellation()
+                    try FileManager.default.copyItem(at: url, to: copy)
+                    try Task.checkCancellation()
+                    let result: ImportedPreview
+                    do { result = ImportedPreview(preview: try inspect(copy), error: nil) }
+                    catch is CancellationError { throw CancellationError() }
+                    catch {
+                        result = ImportedPreview(preview: nil, error: ProvisioningRedaction.redact(error.localizedDescription))
                     }
-                }.value
+                    try Task.checkCancellation()
+                    return result
+                }
+                importTask = task
+                let result = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+                try Task.checkCancellation()
+                guard !task.isCancelled else { throw CancellationError() }
                 if let previous = ipaURL { try? FileManager.default.removeItem(at: previous) }
                 ipaURL = copy
-                inspectedBundleID = nil
+                ipaPreview = result.preview
+                ipaPreviewError = result.error
+                inspectedBundleID = result.preview.flatMap { $0.automaticSigningIssue == nil ? $0.bundleID : nil }
                 ipaName = url.lastPathComponent
                 identifierTeam = nil
                 usesPersonalBundleID = false
@@ -477,7 +518,11 @@ final class SigningViewModel: ObservableObject {
             }
             if input != .pairing { discardOutput() }
             error = nil
-        } catch { self.error = error.localizedDescription }
+            return true
+        } catch {
+            self.error = safeMessage(error)
+            return false
+        }
     }
 
     func installSignedIPA() async {
@@ -569,6 +614,7 @@ final class SigningViewModel: ObservableObject {
 
     deinit {
         identifierTask?.cancel()
+        importTask?.cancel()
         if let ipaURL { try? FileManager.default.removeItem(at: ipaURL) }
     }
 }

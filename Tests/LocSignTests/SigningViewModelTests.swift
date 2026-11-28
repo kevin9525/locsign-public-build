@@ -4,6 +4,55 @@ import ZIPFoundation
 
 final class SigningViewModelTests: XCTestCase {
     @MainActor
+    func testFailedAndCancelledReplacementKeepExistingSignedOutput() async throws {
+        let model = try await signedModel()
+        defer { model.discardOutput() }
+        let output = try XCTUnwrap(model.outputURL)
+        let bytes = try Data(contentsOf: output)
+        let preview = try XCTUnwrap(model.ipaPreview)
+        let selected = model.ipaName
+        let missing = output.deletingLastPathComponent().appendingPathComponent("missing-\(UUID().uuidString).ipa")
+        await model.importFile(missing, as: .ipa)
+        XCTAssertEqual(model.outputURL, output)
+        XCTAssertEqual(try Data(contentsOf: output), bytes)
+        let work = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            await model.importFile(output, as: .ipa)
+        }
+        await work.value
+        XCTAssertEqual(model.outputURL, output)
+        XCTAssertEqual(try Data(contentsOf: output), bytes)
+        XCTAssertEqual(model.ipaPreview, preview)
+        XCTAssertEqual(model.ipaName, selected)
+    }
+
+    @MainActor
+    func testCancelledIPAImportPreservesPreviousSelectionAndSigningChoice() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appendingPathComponent("first.ipa")
+        let second = root.appendingPathComponent("second.ipa")
+        try Data("first source".utf8).write(to: first)
+        try Data("second source".utf8).write(to: second)
+        let model = SigningViewModel()
+        await model.importFile(first, as: .ipa)
+        model.usesPersonalBundleID = true
+        model.personalBundleID = "com.personal.first"
+
+        let importing = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            await model.importFile(second, as: .ipa)
+        }
+        await importing.value
+
+        XCTAssertEqual(model.ipaName, "first.ipa")
+        XCTAssertTrue(model.usesPersonalBundleID)
+        XCTAssertEqual(model.personalBundleID, "com.personal.first")
+        XCTAssertFalse(model.isImporting)
+    }
+
+    @MainActor
     func testManualOutputUsesActualBundleInsteadOfAutomaticIdentifierForPendingGuard() async throws {
         for isSelf in [true, false] {
             let runningBundle = isSelf ? "com.test.app" : "org.example.running"
@@ -83,6 +132,9 @@ final class SigningViewModelTests: XCTestCase {
         try IPAPacker.makeZip(fromDirectory: temporary.appendingPathComponent("Payload"), to: ipa)
 
         await model.importFile(ipa, as: .ipa)
+        XCTAssertEqual(model.ipaPreview?.bundleID, "com.test.app")
+        XCTAssertNotNil(model.ipaPreview?.automaticSigningIssue,
+                        "A preview warning must not block this existing manual-signing fixture")
         await model.importFile(keyURL, as: .identity)
         await model.importFile(profileURL, as: .profile)
         if let personalTarget { model.usesPersonalBundleID = true; model.personalBundleID = personalTarget }
